@@ -421,6 +421,30 @@ test.describe('Desktop Pet Regressions', () => {
     expect(nextState).toEqual({ llm: true, voice: true })
   })
 
+  test('role voice config can be saved from editor modal', async () => {
+    const settingsPage = await ensureSettingsOpen(ctx)
+    await settingsPage.click('[data-testid="role-card-baihu"]')
+    await settingsPage.waitForSelector('.role-modal')
+
+    await settingsPage.locator('[data-testid="role-voice-type"]').selectOption('zh_female_xiaohe_uranus_bigtts')
+    await settingsPage.locator('[data-testid="role-voice-emotion"]').selectOption('comfort')
+    await settingsPage.click('.role-modal-footer button:has-text("保存角色")')
+
+    await expect.poll(async () => {
+      return settingsPage.evaluate(async () => {
+        const rows = await window.electronAPI.listCharacters()
+        const role = rows.find((item) => item.id === 'baihu')
+        return {
+          voiceType: String(role?.voiceType || ''),
+          voiceEmotion: String(role?.voiceEmotion || ''),
+        }
+      })
+    }).toEqual({
+      voiceType: 'zh_female_xiaohe_uranus_bigtts',
+      voiceEmotion: 'comfort',
+    })
+  })
+
   test('dragging to far bottom-right stays within display bounds', async () => {
     const runtime = await getRuntimeState(ctx.page)
     const main = runtime.windows.main.bounds

@@ -6,6 +6,34 @@ const DEFAULT_ASR_STREAM_RESOURCE_ID = 'volc.seedasr.sauc.duration'
 const DEFAULT_ASR_FILE_RESOURCE_ID = 'volc.seedasr.auc'
 const ASR_STREAM_RESOURCE_PREFIX = 'volc.seedasr.sauc.'
 const ASR_FILE_RESOURCE_PREFIX = '.auc'
+const DEFAULT_ROLE_VOICE_TYPE = 'zh_female_vv_uranus_bigtts'
+const DEFAULT_ROLE_VOICE_EMOTION = 'auto'
+
+const ROLE_VOICE_OPTIONS = Object.freeze([
+  { value: 'zh_female_vv_uranus_bigtts', label: 'Vivi 2.0（通用女声）', tone: '通用、多语、情绪覆盖广' },
+  { value: 'zh_male_taocheng_uranus_bigtts', label: '小天 2.0（张力男声）', tone: '适合反差、冲突感表达' },
+  { value: 'zh_female_xiaohe_uranus_bigtts', label: '小何 2.0（轻快女声）', tone: '适合活泼、陪聊氛围' },
+  { value: 'zh_male_m191_uranus_bigtts', label: '云舟 2.0（沉稳男声）', tone: '适合安抚、慢节奏回复' },
+])
+
+const ROLE_VOICE_EMOTION_OPTIONS = Object.freeze([
+  { value: 'auto', label: '自动（按文本识别）' },
+  { value: 'happy', label: '开心 / 轻快' },
+  { value: 'comfort', label: '安慰 / 鼓励' },
+  { value: 'tension', label: '紧张 / 急促' },
+  { value: 'angry', label: '生气 / 压迫感' },
+  { value: 'storytelling', label: '讲述 / 叙事' },
+  { value: 'tender', label: '温柔 / 轻声' },
+  { value: 'neutral', label: '中性 / 平稳' },
+])
+
+const ROLE_VOICE_EMOTION_SET = new Set(ROLE_VOICE_EMOTION_OPTIONS.map((item) => item.value))
+
+function normalizeRoleVoiceEmotion(value, fallback = DEFAULT_ROLE_VOICE_EMOTION) {
+  const raw = String(value || '').trim().toLowerCase()
+  if (ROLE_VOICE_EMOTION_SET.has(raw)) return raw
+  return ROLE_VOICE_EMOTION_SET.has(fallback) ? fallback : DEFAULT_ROLE_VOICE_EMOTION
+}
 
 function clampPetScale(value) {
   const n = Number(value)
@@ -28,6 +56,8 @@ function toCharacterForm(character, fallbackSortOrder = 0) {
       rareAudioPoolText: '',
       chatSystemPrompt: '',
       floatTextColor: '#FF4444',
+      voiceType: DEFAULT_ROLE_VOICE_TYPE,
+      voiceEmotion: DEFAULT_ROLE_VOICE_EMOTION,
       isCustom: true,
     }
   }
@@ -45,6 +75,8 @@ function toCharacterForm(character, fallbackSortOrder = 0) {
     rareAudioPoolText: Array.isArray(character.rareAudioPool) ? character.rareAudioPool.join('\n') : '',
     chatSystemPrompt: character.chatSystemPrompt || '',
     floatTextColor: character.floatTextColor || '#FF4444',
+    voiceType: character.voiceType || DEFAULT_ROLE_VOICE_TYPE,
+    voiceEmotion: normalizeRoleVoiceEmotion(character.voiceEmotion, DEFAULT_ROLE_VOICE_EMOTION),
     isCustom: character.isCustom,
   }
 }
@@ -194,5 +226,7 @@ export {
   normalizeAsrMode,
   normalizeAsrResourceIdByMode,
   parseRareAudioPool,
+  ROLE_VOICE_EMOTION_OPTIONS,
+  ROLE_VOICE_OPTIONS,
   toCharacterForm,
 }

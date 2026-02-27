@@ -28,6 +28,27 @@ const CHAR_VOICE_MAP = Object.freeze({
   hamster_orange: 'zh_female_xiaohe_uranus_bigtts',
   muyu: 'zh_male_m191_uranus_bigtts',
 })
+const CHAR_DEFAULT_EMOTION_MAP = Object.freeze({
+  baihu: 'happy',
+  muyu: 'neutral',
+  hamster_orange: 'happy',
+  hamster_gray: 'neutral',
+  frog: 'happy',
+  capybara: 'comfort',
+  qinglong: 'neutral',
+  zhuque: 'happy',
+  xuanwu: 'neutral',
+})
+const SUPPORTED_EMOTIONS = new Set([
+  'auto',
+  'neutral',
+  'happy',
+  'comfort',
+  'angry',
+  'tension',
+  'storytelling',
+  'tender',
+])
 
 const EMOTION_KEYWORDS = Object.freeze({
   angry: ['气死', '可恶', '生气', '烦死', '滚', '吼', '打死你', '惹毛', '炸了'],
@@ -58,6 +79,15 @@ function toBool(value, fallback = false) {
   if (text === '1' || text === 'true') return true
   if (text === '0' || text === 'false') return false
   return fallback
+}
+
+function normalizeEmotionValue(value, fallback = '') {
+  const raw = String(value || '').trim().toLowerCase()
+  if (SUPPORTED_EMOTIONS.has(raw)) return raw
+
+  const nextFallback = String(fallback || '').trim().toLowerCase()
+  if (SUPPORTED_EMOTIONS.has(nextFallback)) return nextFallback
+  return ''
 }
 
 function normalizeAsrMode(value) {
@@ -579,19 +609,42 @@ class VoiceService {
     if (!credentials.accessKey) throw new Error('缺少语音 AccessToken')
   }
 
-  resolveVoiceType(charId) {
+  getCharacterVoicePrefs(charId) {
+    const id = String(charId || '').trim().toLowerCase()
+    if (!id || typeof this.db?.getCharacterById !== 'function') {
+      return { voiceType: '', voiceEmotion: '' }
+    }
+    const row = this.db.getCharacterById(id)
+    return {
+      voiceType: String(row?.voiceType || '').trim(),
+      voiceEmotion: normalizeEmotionValue(row?.voiceEmotion, ''),
+    }
+  }
+
+  resolveVoiceType(charId, explicitVoiceType = '') {
+    const direct = String(explicitVoiceType || '').trim()
+    if (direct) return direct
+
+    const prefs = this.getCharacterVoicePrefs(charId)
+    if (prefs.voiceType) return prefs.voiceType
+
     const id = String(charId || '').trim().toLowerCase()
     return CHAR_VOICE_MAP[id] || DEFAULT_CHAR_VOICE
   }
 
   detectEmotion(text, charId, explicitEmotion) {
-    const direct = String(explicitEmotion || '').trim()
-    if (direct) return direct
+    const direct = normalizeEmotionValue(explicitEmotion, '')
+    if (direct && direct !== 'auto') return direct
+
+    const prefs = this.getCharacterVoicePrefs(charId)
+    const defaultEmotion = normalizeEmotionValue(
+      prefs.voiceEmotion,
+      normalizeEmotionValue(CHAR_DEFAULT_EMOTION_MAP[String(charId || '').trim().toLowerCase()], 'happy')
+    )
 
     const source = String(text || '').toLowerCase()
     if (!source) {
-      if (charId === 'muyu') return 'neutral'
-      return 'happy'
+      return defaultEmotion && defaultEmotion !== 'auto' ? defaultEmotion : 'happy'
     }
 
     if (EMOTION_KEYWORDS.angry.some((item) => source.includes(item))) return 'angry'
@@ -600,8 +653,7 @@ class VoiceService {
     if (EMOTION_KEYWORDS.storytelling.some((item) => source.includes(item))) return 'storytelling'
     if (EMOTION_KEYWORDS.happy.some((item) => source.includes(item))) return 'happy'
 
-    if (charId === 'muyu') return 'neutral'
-    return 'happy'
+    return defaultEmotion && defaultEmotion !== 'auto' ? defaultEmotion : 'happy'
   }
 
   async uploadAudioDataUrl(audioDataUrl, mimeType, uploadEndpoint) {
@@ -1268,7 +1320,7 @@ class VoiceService {
     throw new Error('ASR 识别超时，请重试')
   }
 
-  async requestTtsOnce({ credentials, text, charId, emotion }) {
+  async requestTtsOnce({ credentials, text, charId, emotion, voiceType }) {
     const requestId = makeRequestId()
     const payload = cleanObject({
       user: {
@@ -1277,7 +1329,7 @@ class VoiceService {
       namespace: 'BidirectionalTTS',
       req_params: {
         text,
-        speaker: this.resolveVoiceType(charId),
+        speaker: this.resolveVoiceType(charId, voiceType),
         audio_params: {
           format: credentials.ttsFormat || 'mp3',
           sample_rate: credentials.ttsSampleRate || 24000,
@@ -1363,10 +1415,10 @@ class VoiceService {
       throw new Error(`TTS 未返回音频数据（返回片段: ${snippet || 'empty'}）`)
     }
 
-    const voiceType = payload?.req_params?.speaker || DEFAULT_CHAR_VOICE
+    const resolvedVoiceType = payload?.req_params?.speaker || DEFAULT_CHAR_VOICE
     return {
       requestId,
-      voiceType,
+      voiceType: resolvedVoiceType,
       emotion: emotion || '',
       format: credentials.ttsFormat || 'mp3',
       audioBase64: audioChunks.join(''),
@@ -1384,6 +1436,7 @@ class VoiceService {
     }
 
     const charId = String(payload.charId || '').trim()
+    const requestedVoiceType = String(payload.voiceType || '').trim()
     const wantedEmotion = this.detectEmotion(text, charId, payload.emotion)
 
     try {
@@ -1392,6 +1445,7 @@ class VoiceService {
         text,
         charId,
         emotion: wantedEmotion,
+        voiceType: requestedVoiceType,
       })
 
       return {
@@ -1410,6 +1464,7 @@ class VoiceService {
         text,
         charId,
         emotion: '',
+        voiceType: requestedVoiceType,
       })
       return {
         ...fallback,

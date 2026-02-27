@@ -27,6 +27,34 @@ const DEFAULT_VOICE_ASR_UPLOAD_ENDPOINT = ''
 const DEFAULT_VOICE_TTS_RESOURCE_ID = 'seed-tts-2.0'
 const DEFAULT_VOICE_TTS_FORMAT = 'mp3'
 const DEFAULT_VOICE_TTS_SAMPLE_RATE = 24000
+const DEFAULT_CHAR_VOICE_TYPE = 'zh_female_vv_uranus_bigtts'
+const DEFAULT_CHAR_VOICE_EMOTION = 'auto'
+const DEFAULT_CHAR_VOICE_MAP = Object.freeze({
+  baihu: 'zh_male_taocheng_uranus_bigtts',
+  hamster_orange: 'zh_female_xiaohe_uranus_bigtts',
+  muyu: 'zh_male_m191_uranus_bigtts',
+})
+const DEFAULT_CHAR_EMOTION_MAP = Object.freeze({
+  baihu: 'happy',
+  muyu: 'neutral',
+  hamster_orange: 'happy',
+  hamster_gray: 'neutral',
+  frog: 'happy',
+  capybara: 'comfort',
+  qinglong: 'neutral',
+  zhuque: 'happy',
+  xuanwu: 'neutral',
+})
+const SUPPORTED_CHAR_EMOTIONS = new Set([
+  'auto',
+  'neutral',
+  'happy',
+  'comfort',
+  'angry',
+  'tension',
+  'storytelling',
+  'tender',
+])
 
 const DEFAULT_CHAT_PROMPTS = Object.freeze({
   default: '你是木鱼桌宠里的陪伴型 AI。回答要简短、友好、贴近日常。避免危险建议。',
@@ -61,6 +89,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: 'audio/baihu_rare.mp3',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('baihu'),
+    voiceEmotion: getDefaultVoiceEmotionForId('baihu'),
     isCustom: 0,
   },
   {
@@ -75,6 +105,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: '',
     rareAudioPool: ['audio/muyu_rare_1.mp3', 'audio/muyu_rare_2.mp3', 'audio/muyu_rare_3.mp3'],
     floatTextColor: '#FFD76A',
+    voiceType: getDefaultVoiceTypeForId('muyu'),
+    voiceEmotion: getDefaultVoiceEmotionForId('muyu'),
     isCustom: 0,
   },
   {
@@ -89,6 +121,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: '',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('hamster_orange'),
+    voiceEmotion: getDefaultVoiceEmotionForId('hamster_orange'),
     isCustom: 0,
   },
   {
@@ -103,6 +137,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: 'audio/hamster_gray_rare.mp3',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('hamster_gray'),
+    voiceEmotion: getDefaultVoiceEmotionForId('hamster_gray'),
     isCustom: 0,
   },
   {
@@ -117,6 +153,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: 'audio/frog_rare.mp3',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('frog'),
+    voiceEmotion: getDefaultVoiceEmotionForId('frog'),
     isCustom: 0,
   },
   {
@@ -131,6 +169,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: '',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('capybara'),
+    voiceEmotion: getDefaultVoiceEmotionForId('capybara'),
     isCustom: 0,
   },
   {
@@ -145,6 +185,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: '',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('qinglong'),
+    voiceEmotion: getDefaultVoiceEmotionForId('qinglong'),
     isCustom: 0,
   },
   {
@@ -159,6 +201,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: '',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('zhuque'),
+    voiceEmotion: getDefaultVoiceEmotionForId('zhuque'),
     isCustom: 0,
   },
   {
@@ -173,6 +217,8 @@ const DEFAULT_CHARACTERS = [
     rareAudio: 'audio/xuanwu_rare.mp3',
     rareAudioPool: [],
     floatTextColor: '#FF4444',
+    voiceType: getDefaultVoiceTypeForId('xuanwu'),
+    voiceEmotion: getDefaultVoiceEmotionForId('xuanwu'),
     isCustom: 0,
   },
 ]
@@ -183,6 +229,20 @@ let _db = null
 
 function getDefaultChatPromptForId(charId) {
   return DEFAULT_CHAT_PROMPTS[charId] || DEFAULT_CHAT_PROMPTS.default
+}
+
+function getDefaultVoiceTypeForId(charId) {
+  return DEFAULT_CHAR_VOICE_MAP[charId] || DEFAULT_CHAR_VOICE_TYPE
+}
+
+function normalizeVoiceEmotion(value, fallback = DEFAULT_CHAR_VOICE_EMOTION) {
+  const raw = String(value || '').trim().toLowerCase()
+  if (SUPPORTED_CHAR_EMOTIONS.has(raw)) return raw
+  return SUPPORTED_CHAR_EMOTIONS.has(fallback) ? fallback : DEFAULT_CHAR_VOICE_EMOTION
+}
+
+function getDefaultVoiceEmotionForId(charId) {
+  return normalizeVoiceEmotion(DEFAULT_CHAR_EMOTION_MAP[charId], DEFAULT_CHAR_VOICE_EMOTION)
 }
 
 function validatePromptLength(prompt, fieldName) {
@@ -261,6 +321,8 @@ function addCharacterColumns() {
   addColumnIfMissing('rare_audio_pool_json', 'TEXT', "DEFAULT '[]'")
   addColumnIfMissing('chat_system_prompt', 'TEXT')
   addColumnIfMissing('float_text_color', 'TEXT', "DEFAULT '#FF4444'")
+  addColumnIfMissing('voice_type', 'TEXT', `DEFAULT '${DEFAULT_CHAR_VOICE_TYPE}'`)
+  addColumnIfMissing('voice_emotion', 'TEXT', `DEFAULT '${DEFAULT_CHAR_VOICE_EMOTION}'`)
   addColumnIfMissing('is_custom', 'INTEGER', 'DEFAULT 0')
   addColumnIfMissing('chat_offset_x', 'INTEGER', `DEFAULT ${DEFAULT_CHAT_OFFSET_X}`)
   addColumnIfMissing('chat_offset_y', 'INTEGER', `DEFAULT ${DEFAULT_CHAT_OFFSET_Y}`)
@@ -275,8 +337,8 @@ function seedDefaultCharacters() {
     INSERT OR IGNORE INTO characters (
       id, name, animation_type, is_active, sort_order,
       idle_img, hit_img, main_audio, rare_audio, rare_audio_pool_json, chat_system_prompt,
-      float_text_color, is_custom, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      float_text_color, voice_type, voice_emotion, is_custom, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const tx = db.transaction(() => {
@@ -294,6 +356,8 @@ function seedDefaultCharacters() {
         JSON.stringify(row.rareAudioPool),
         getDefaultChatPromptForId(row.id),
         row.floatTextColor,
+        row.voiceType,
+        row.voiceEmotion,
         row.isCustom,
         Date.now()
       )
@@ -319,6 +383,8 @@ function seedDefaultCharacters() {
       END,
       chat_system_prompt = COALESCE(NULLIF(chat_system_prompt, ''), ?),
       float_text_color = COALESCE(float_text_color, ?),
+      voice_type = COALESCE(NULLIF(voice_type, ''), ?),
+      voice_emotion = COALESCE(NULLIF(voice_emotion, ''), ?),
       is_custom = COALESCE(is_custom, 0),
       chat_offset_x = COALESCE(chat_offset_x, ?),
       chat_offset_y = COALESCE(chat_offset_y, ?),
@@ -337,6 +403,8 @@ function seedDefaultCharacters() {
         JSON.stringify(row.rareAudioPool),
         getDefaultChatPromptForId(row.id),
         row.floatTextColor,
+        row.voiceType,
+        row.voiceEmotion,
         DEFAULT_CHAT_OFFSET_X,
         DEFAULT_CHAT_OFFSET_Y,
         DEFAULT_CHAT_SIDE,
@@ -374,6 +442,8 @@ function normalizeCharacterRow(row) {
     rareAudioPool: parseRarePool(row.rare_audio_pool_json, fallback.rareAudioPool || []),
     chatSystemPrompt: row.chat_system_prompt || getDefaultChatPromptForId(row.id),
     floatTextColor: row.float_text_color || fallback.floatTextColor || '#FF4444',
+    voiceType: row.voice_type || fallback.voiceType || getDefaultVoiceTypeForId(row.id),
+    voiceEmotion: normalizeVoiceEmotion(row.voice_emotion, fallback.voiceEmotion || getDefaultVoiceEmotionForId(row.id)),
     isCustom: row.is_custom === 1,
     chatOffsetX: Number.isFinite(row.chat_offset_x) ? row.chat_offset_x : DEFAULT_CHAT_OFFSET_X,
     chatOffsetY: Number.isFinite(row.chat_offset_y) ? row.chat_offset_y : DEFAULT_CHAT_OFFSET_Y,
@@ -423,7 +493,7 @@ function upsertCharacter(input) {
 
   const id = sanitizeCharacterId(input.id)
   const existing = db
-    .prepare('SELECT id, sort_order, chat_system_prompt, chat_offset_x, chat_offset_y, chat_side FROM characters WHERE id = ?')
+    .prepare('SELECT id, sort_order, chat_system_prompt, voice_type, voice_emotion, chat_offset_x, chat_offset_y, chat_side FROM characters WHERE id = ?')
     .get(id)
 
   if (!existing) {
@@ -462,6 +532,8 @@ function upsertCharacter(input) {
     rareAudioPool: Array.isArray(input.rareAudioPool) ? input.rareAudioPool : [],
     chatSystemPrompt,
     floatTextColor: String(input.floatTextColor || '#FF4444'),
+    voiceType: String(input.voiceType || '').trim() || String(existing?.voice_type || '').trim() || getDefaultVoiceTypeForId(id),
+    voiceEmotion: normalizeVoiceEmotion(input.voiceEmotion, normalizeVoiceEmotion(existing?.voice_emotion, getDefaultVoiceEmotionForId(id))),
     isCustom,
     chatOffsetX: Number.isFinite(input.chatOffsetX) ? Math.round(input.chatOffsetX) : (existing?.chat_offset_x ?? DEFAULT_CHAT_OFFSET_X),
     chatOffsetY: Number.isFinite(input.chatOffsetY) ? Math.round(input.chatOffsetY) : (existing?.chat_offset_y ?? DEFAULT_CHAT_OFFSET_Y),
@@ -473,8 +545,8 @@ function upsertCharacter(input) {
     INSERT INTO characters (
       id, name, animation_type, is_active, sort_order,
       idle_img, hit_img, main_audio, rare_audio, rare_audio_pool_json, chat_system_prompt,
-      float_text_color, is_custom, chat_offset_x, chat_offset_y, chat_side, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      float_text_color, voice_type, voice_emotion, is_custom, chat_offset_x, chat_offset_y, chat_side, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       animation_type = excluded.animation_type,
@@ -487,6 +559,8 @@ function upsertCharacter(input) {
       rare_audio_pool_json = excluded.rare_audio_pool_json,
       chat_system_prompt = excluded.chat_system_prompt,
       float_text_color = excluded.float_text_color,
+      voice_type = excluded.voice_type,
+      voice_emotion = excluded.voice_emotion,
       is_custom = excluded.is_custom,
       chat_offset_x = excluded.chat_offset_x,
       chat_offset_y = excluded.chat_offset_y,
@@ -505,6 +579,8 @@ function upsertCharacter(input) {
     JSON.stringify(payload.rareAudioPool),
     payload.chatSystemPrompt,
     payload.floatTextColor,
+    payload.voiceType,
+    payload.voiceEmotion,
     payload.isCustom,
     payload.chatOffsetX,
     payload.chatOffsetY,

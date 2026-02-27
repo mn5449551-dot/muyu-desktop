@@ -266,6 +266,8 @@ export default function SettingsView() {
         rareAudioPool,
         chatSystemPrompt: prompt,
         floatTextColor: editorDraft.floatTextColor,
+        voiceType: editorDraft.voiceType,
+        voiceEmotion: editorDraft.voiceEmotion,
         isCustom: editorDraft.isCustom,
       }
 

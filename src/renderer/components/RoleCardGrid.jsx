@@ -30,6 +30,7 @@ export default function RoleCardGrid({
           <button
             type="button"
             key={role.id}
+            data-testid={`role-card-${role.id}`}
             className={`role-card${role.id === selectedId ? ' is-selected' : ''}`}
             onClick={() => onEdit(role.id)}
             aria-label={`查看 ${role.name} 角色详情`}
