@@ -1,0 +1,31 @@
+<!-- pages/settings/index.wxml -->
+<view class="settings-page">
+  <view class="section-title">声音与震动</view>
+
+  <view class="setting-row">
+    <view class="setting-row-left">
+      <view class="setting-dot dot-sound"></view>
+      <view class="setting-label">音效</view>
+    </view>
+    <view class="setting-row-right">
+      <text class="try-btn" bindtap="trySound">试听</text>
+      <switch checked="{{soundEnabled}}" bindchange="onSoundChange" color="#FFD76A" />
+    </view>
+  </view>
+
+  <view class="setting-row">
+    <view class="setting-row-left">
+      <view class="setting-dot dot-vibration"></view>
+      <view class="setting-label">震动</view>
+    </view>
+    <view class="setting-row-right">
+      <text class="try-btn" bindtap="tryVibration">试试</text>
+      <switch checked="{{vibrationEnabled}}" bindchange="onVibrationChange" color="#FFD76A" />
+    </view>
+  </view>
+
+  <view class="about-section">
+    <text class="about-slogan">戳它，然后看它出丑</text>
+    <text class="about-version">v1.0.0</text>
+  </view>
+</view>

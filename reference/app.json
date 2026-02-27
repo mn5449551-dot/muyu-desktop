@@ -1,0 +1,17 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/characters/index",
+    "pages/settings/index"
+  ],
+  "window": {
+    "backgroundColor": "#FFFCEE",
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#FFFCEE",
+    "navigationBarTitleText": "烦恼",
+    "navigationBarTextStyle": "black"
+  },
+  "sitemapLocation": "sitemap.json",
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents"
+}

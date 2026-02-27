@@ -1,0 +1,21 @@
+/**app.wxss**/
+page {
+  background: #FFFCEE;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  font-weight: 900;
+}
+
+button {
+  background: initial;
+  font-weight: 900;
+}
+
+button:focus {
+  outline: 0;
+}
+
+button::after {
+  border: none;
+}

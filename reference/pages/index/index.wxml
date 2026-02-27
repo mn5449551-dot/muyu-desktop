@@ -1,0 +1,69 @@
+<!-- pages/index/index.wxml -->
+<view class="page">
+
+  <!-- Toolbar row: char thumb + char name + settings icon -->
+  <view class="toolbar">
+    <image class="toolbar-char" src="{{char.idleImg}}" mode="aspectFit" bindtap="goChars" />
+    <text class="toolbar-char-name" bindtap="goChars">{{char.name}}</text>
+    <view class="toolbar-spacer" />
+    <text class="toolbar-setting" bindtap="goSettings">⚙️</text>
+  </view>
+
+  <!-- Shake wrapper: wraps character area, float texts, particles -->
+  <view class="shake-wrap {{shakeClass}}">
+
+    <!-- Floating texts (absolute, inside shake-wrap) -->
+    <view
+      wx:for="{{floatTexts}}"
+      wx:key="id"
+      class="float-text"
+      style="left:{{item.left}}%;top:{{item.top}}%;color:{{item.color}}"
+    >{{item.text}}</view>
+
+    <!-- Particles (absolute, inside shake-wrap) -->
+    <view
+      wx:for="{{particles}}"
+      wx:key="id"
+      class="particle p-fly-{{item.dir}}"
+      style="left:{{item.x}}%;top:{{item.y}}%;background:{{item.color}};width:{{item.size}}rpx;height:{{item.size}}rpx"
+    />
+
+    <!-- Character touch area -->
+    <view class="char-touch" bindtap="onTap">
+      <image
+        class="char-img {{squeezeClass}} {{switchClass}}"
+        src="{{isHit ? char.hitImg : char.idleImg}}"
+        mode="aspectFit"
+      />
+    </view>
+
+  </view>
+
+  <!-- Counter area -->
+  <view class="counter-area">
+    <view class="count-inner {{countShakeClass}}">
+      <text class="count-num">{{count}}</text>
+      <text class="count-label">次</text>
+    </view>
+    <view class="progress-track">
+      <view class="progress-fill" style="width:{{progress}}%"></view>
+    </view>
+    <text class="progress-hint">{{progressHint}}</text>
+    <view wx:if="{{showBadge}}" class="badge badge-pop">{{badgeText}}</view>
+  </view>
+
+  <!-- Share button -->
+  <button class="share-btn" open-type="share">分享给朋友</button>
+
+  <!-- Unlock modal -->
+  <view wx:if="{{showUnlockModal}}" class="unlock-overlay" catchtap="closeUnlockModal">
+    <view class="unlock-modal unlock-modal-pop" catchtap="">
+      <text class="unlock-emoji">🎉</text>
+      <text class="unlock-title">新角色解锁！</text>
+      <image class="unlock-img" src="{{unlockChar.idleImg}}" mode="aspectFit" />
+      <text class="unlock-name">{{unlockChar.name}}</text>
+      <view class="unlock-close" bindtap="closeUnlockModal">好的！</view>
+    </view>
+  </view>
+
+</view>

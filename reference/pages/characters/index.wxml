@@ -1,0 +1,21 @@
+<!-- pages/characters/index.wxml -->
+<view class="chars-page">
+  <view class="grid">
+    <view
+      wx:for="{{cards}}"
+      wx:key="id"
+      class="card {{item.selected ? 'card--selected' : ''}} {{item.isLocked ? 'card--locked' : ''}} {{item.shaking ? 'card--shake' : ''}}"
+      style="background:{{item.bg}};transform:rotate({{item.tilt}}deg)"
+      bindtap="onSelect"
+      data-id="{{item.id}}"
+    >
+      <view wx:if="{{item.selected}}" class="card-check">✓</view>
+      <image class="card-img" src="{{item.idleImg}}" mode="aspectFit" />
+      <view class="card-name">{{item.name}}</view>
+      <view wx:if="{{item.isLocked}}" class="lock-overlay">
+        <text class="lock-icon">🔒</text>
+        <text class="lock-need">{{item.need === 0 ? '点击解锁' : '还差' + item.need + '次'}}</text>
+      </view>
+    </view>
+  </view>
+</view>
