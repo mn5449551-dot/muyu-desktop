@@ -38,6 +38,7 @@
     ],
     "mac": {
       "icon": "build-resources/icon.icns",
+      "artifactName": "muyu-desktop-mac-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
@@ -50,6 +51,7 @@
     },
     "win": {
       "icon": "build-resources/icon.ico",
+      "artifactName": "muyu-desktop-win-${arch}.${ext}",
       "target": [
         {
           "target": "zip",

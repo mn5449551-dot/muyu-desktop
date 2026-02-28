@@ -54,8 +54,9 @@ git push origin v0.1.0
 
 Expected release assets:
 
-- `*.dmg` for macOS
-- `*.zip` for Windows portable distribution
+- `muyu-desktop-mac-arm64.dmg` for macOS Apple Silicon
+- `muyu-desktop-mac-x64.dmg` for macOS Intel
+- `muyu-desktop-win-x64.zip` for Windows portable distribution
 
 ## Rollback
 
