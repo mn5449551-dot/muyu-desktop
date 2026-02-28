@@ -19,6 +19,7 @@
   "build": {
     "appId": "com.muyu.desktop",
     "productName": "木鱼桌宠",
+    "icon": "build-resources/icon.png",
     "directories": {
       "buildResources": "build-resources",
       "output": "dist-electron"
@@ -36,6 +37,7 @@
       }
     ],
     "mac": {
+      "icon": "build-resources/icon.icns",
       "target": [
         {
           "target": "dmg",
@@ -47,6 +49,7 @@
       ]
     },
     "win": {
+      "icon": "build-resources/icon.ico",
       "target": [
         {
           "target": "zip",
