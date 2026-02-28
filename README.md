@@ -72,6 +72,33 @@ Notes:
 - API keys/tokens are encrypted with Electron `safeStorage`
 - Exported docs (`.md`, `.json`, `.jsonl`) contain user data and should be treated as sensitive
 
+## API Key 获取与配置（火山引擎）
+
+本项目默认使用火山能力：
+
+- LLM（方舟）接口：`https://ark.cn-beijing.volces.com/api/v3/chat/completions`
+- 语音（ASR/TTS）接口：豆包语音
+
+获取入口（官方）：
+
+- 方舟控制台（LLM API Key）：`https://console.volcengine.com/ark`
+- 豆包语音快速入门（AppID/Access Token）：`https://www.volcengine.com/docs/6561/2119699`
+- 音色列表（`voice_type` / `emotion`）：`https://www.volcengine.com/docs/6561/1257544`
+- TTS V3 文档：`https://www.volcengine.com/docs/6561/1598757`
+- ASR 流式文档：`https://www.volcengine.com/docs/6561/1354869`
+
+在应用中配置：
+
+1. 打开设置面板。
+2. 在 AI 配置中填写 LLM API Key（以及 Base URL/Model）。
+3. 在语音配置中填写 `AppID`、`Access Token`、`ASR 资源 ID`、`TTS 资源 ID`。
+4. 点击“保存”并执行“测试连通”。
+
+注意：
+
+- 不要把真实 API Key / Token 提交到 GitHub。
+- 本地保存会使用 Electron `safeStorage` 加密。
+
 ## Testing
 
 Primary regression suite:
