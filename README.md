@@ -91,6 +91,7 @@ Playwright config:
 Release pipeline is defined in:
 
 - `.github/workflows/release.yml`
+- Latest downloads: `https://github.com/mn5449551-dot/muyu-desktop/releases/latest`
 
 Trigger:
 
