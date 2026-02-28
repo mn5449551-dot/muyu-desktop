@@ -117,8 +117,6 @@ function buildSettingsConfig(appConfig = {}) {
     model: llm.model || '',
     temperature: Number.isFinite(llm.temperature) ? llm.temperature : 0.7,
     maxContext: Number.isFinite(llm.maxContext) ? llm.maxContext : 20,
-    multiAgentEnabled: llm.multiAgentEnabled !== false,
-    memorySummarySystemPrompt: llm.memorySummarySystemPrompt || '',
     apiKey: '',
     apiKeyConfigured: Boolean(llm.apiKeyConfigured),
     encryptionAvailable: Boolean(llm.encryptionAvailable),
@@ -144,8 +142,6 @@ function buildLlmConfigSavePayload(config, { apiKeyDirty = false } = {}) {
       model: config.model,
       temperature: Number(config.temperature),
       maxContext: Number(config.maxContext),
-      multiAgentEnabled: Boolean(config.multiAgentEnabled),
-      memorySummarySystemPrompt: String(config.memorySummarySystemPrompt || '').trim(),
     },
   }
 

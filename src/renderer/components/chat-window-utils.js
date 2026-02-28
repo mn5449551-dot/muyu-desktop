@@ -1,5 +1,18 @@
+const KNOWN_ERROR_KINDS = new Set([
+  'missing_key',
+  'auth',
+  'timeout',
+  'endpoint',
+  'network',
+  'provider',
+  'unknown',
+  'aborted',
+  'asr_no_text',
+  'audio_format',
+])
+
 function getSessionIdByCharId(charId) {
-  return `pet_${String(charId || 'default')}`
+  return `pet_${String(charId || 'baihu')}`
 }
 
 function isMissingApiKeyError(message) {
@@ -15,16 +28,36 @@ function parseStatusCode(value) {
   return match ? Number(match[1]) : null
 }
 
-function resolveErrorKind({ message = '', kind = '', status = null }) {
+function inferKindFromReasonCode(reasonCode = '') {
+  const value = String(reasonCode || '').trim().toLowerCase()
+  if (!value) return ''
+  if (value === 'request_aborted') return 'aborted'
+  if (value.includes('missing_api_key')) return 'missing_key'
+  if (value.includes('auth')) return 'auth'
+  if (value.includes('endpoint')) return 'endpoint'
+  if (value.includes('timeout')) return 'timeout'
+  if (value.includes('network')) return 'network'
+  if (value.includes('no_text')) return 'asr_no_text'
+  if (value.includes('unsupported_audio') || value.includes('audio_format')) return 'audio_format'
+  if (value.includes('provider')) return 'provider'
+  return ''
+}
+
+function resolveErrorKind({ message = '', kind = '', status = null, reasonCode = '' }) {
   const normalizedKind = String(kind || '').trim().toLowerCase()
-  if (normalizedKind === 'missing_key' || normalizedKind === 'auth' || normalizedKind === 'timeout' || normalizedKind === 'endpoint' || normalizedKind === 'network') {
+  if (KNOWN_ERROR_KINDS.has(normalizedKind)) {
     return normalizedKind
   }
+
+  const inferredKind = inferKindFromReasonCode(reasonCode)
+  if (inferredKind) return inferredKind
 
   const text = String(message || '').toLowerCase()
   if (isMissingApiKeyError(text)) return 'missing_key'
   if (status === 401 || status === 403 || /unauthorized|invalid.*key|auth|权限|鉴权/.test(text)) return 'auth'
   if (/timeout|timed out|超时/.test(text)) return 'timeout'
+  if (/未返回可识别文本|未识别到有效文本|语音过短|no text|empty/.test(text)) return 'asr_no_text'
+  if (/不接受当前音频格式|unsupported|format|invalid audio/.test(text)) return 'audio_format'
   if ([404, 405, 415, 422].includes(status) || /not found|endpoint|路由|路径|completions|responses/.test(text)) return 'endpoint'
   if (/fetch failed|network|econn|enotfound|dns|socket|断网|网络/.test(text)) return 'network'
   return 'unknown'
@@ -134,29 +167,46 @@ function formatChatError(message) {
   return text.length > 200 ? `${text.slice(0, 200)}...` : text
 }
 
-function getReasonLabel(kind, { status = null, mode = '', detail = '' } = {}) {
+function getReasonLabel(kind, { status = null, mode = '', detail = '', source = '' } = {}) {
   const statusText = status ? `(${status})` : ''
+  if (kind === 'asr_no_text') return '语音未识别到有效文本'
+  if (kind === 'audio_format') return '语音格式不支持'
   if (kind === 'auth') return `鉴权失败${statusText}`
   if (kind === 'timeout') return '请求超时'
-  if (kind === 'endpoint') return `接口配置不匹配${statusText}${mode ? `/${mode}` : ''}`
+  if (kind === 'endpoint') {
+    const sourceTag = source.startsWith('voice') ? '语音接口' : '接口'
+    return `${sourceTag}配置不匹配${statusText}${mode ? `/${mode}` : ''}`
+  }
   if (kind === 'network') return '网络连接异常'
   return detail || '请求失败'
 }
 
-function getErrorExplain(kind, { status = null, mode = '', detail = '' } = {}) {
+function getErrorExplain(kind, { status = null, mode = '', detail = '', source = '' } = {}) {
   if (kind === 'missing_key') return '未检测到可用 API Key，本次请求未发出。'
+  if (kind === 'asr_no_text') return '本次语音输入没有识别到可用文本。'
+  if (kind === 'audio_format') return '当前语音格式不被 ASR 服务接受。'
   if (kind === 'auth') return `服务端返回鉴权错误${status ? `（${status}）` : ''}，常见于 Key 无效或无模型权限。`
   if (kind === 'timeout') return '等待模型响应超时，当前请求已中断。'
-  if (kind === 'endpoint') return `API URL 与调用模式${mode ? `（${mode}）` : ''}可能不匹配或端点不存在。`
+  if (kind === 'endpoint') {
+    if (source.startsWith('voice')) {
+      return `语音服务地址或模式${mode ? `（${mode}）` : ''}可能不匹配或端点不存在。`
+    }
+    return `API URL 与调用模式${mode ? `（${mode}）` : ''}可能不匹配或端点不存在。`
+  }
   if (kind === 'network') return '应用到模型服务的网络链路异常（DNS/代理/防火墙）。'
   return `模型服务返回异常：${detail || '未知错误'}`
 }
 
-function getErrorAdvice(kind) {
+function getErrorAdvice(kind, source = '') {
   if (kind === 'missing_key') return '点右上角「设」→ AI 配置，填写 API Key 后保存。'
+  if (kind === 'asr_no_text') return '请贴近麦克风、放慢语速后再试一次。'
+  if (kind === 'audio_format') return '优先使用 wav/pcm/ogg/mp3，避免浏览器不兼容编码。'
   if (kind === 'auth') return '核对 API Key、模型 ID，并确认账号已开通该模型权限。'
   if (kind === 'timeout') return '先重试一次；若仍超时，检查网络或稍后再试。'
-  if (kind === 'endpoint') return '检查 API URL 后缀：chat 用 /chat/completions，responses 用 /responses。'
+  if (kind === 'endpoint') {
+    if (source.startsWith('voice')) return '检查语音服务地址、region、resource_id 与流式/文件模式是否一致。'
+    return '检查 API URL 后缀：chat 用 /chat/completions，responses 用 /responses。'
+  }
   if (kind === 'network') return '检查网络和代理设置，确认可访问模型服务域名后再试。'
   return '重试一次；若持续失败，请把报错内容发给开发者排查。'
 }
@@ -173,14 +223,30 @@ function buildChatErrorMessage({ charId, payload = {} }) {
   const pretty = formatChatError(payload?.message || '')
   const status = parseStatusCode(payload?.status) || parseStatusCode(pretty)
   const mode = String(payload?.mode || '').trim().toLowerCase()
-  const kind = resolveErrorKind({ message: pretty, kind: payload?.kind, status })
+  const source = String(payload?.source || '').trim().toLowerCase()
+  const kind = resolveErrorKind({
+    message: pretty,
+    kind: payload?.kind,
+    status,
+    reasonCode: payload?.reasonCode,
+  })
   const missingKey = kind === 'missing_key'
   const roleLine = missingKey
     ? getRoleErrorMessage(charId, 'missingKey')
-    : getRoleErrorMessage(charId, 'requestFailed', getReasonLabel(kind, { status, mode, detail: pretty }))
+    : getRoleErrorMessage(charId, 'requestFailed', getReasonLabel(kind, {
+      status,
+      mode,
+      detail: pretty,
+      source,
+    }))
 
   return {
-    text: `${roleLine}\n说明：${getErrorExplain(kind, { status, mode, detail: pretty })}\n建议：${getErrorAdvice(kind)}`,
+    text: `${roleLine}\n说明：${getErrorExplain(kind, {
+      status,
+      mode,
+      detail: pretty,
+      source,
+    })}\n建议：${getErrorAdvice(kind, source)}`,
     isError: true,
     missingKey,
   }

@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const zlib = require('zlib')
 const WebSocket = require('ws')
 const log = require('../logger')
+const { classifyVoiceError, buildErrorPayload } = require('./error-classifier')
 
 const ASR_SUBMIT_URL = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit'
 const ASR_QUERY_URL = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/query'
@@ -728,12 +729,17 @@ class VoiceService {
   emitStreamError(session, error) {
     if (!session || session.closed) return
     const message = String(error?.message || error || 'ASR 流式异常')
+    const classification = classifyVoiceError(error, {
+      source: 'voice_asr',
+      mode: ASR_MODE_STREAM,
+    })
     if (typeof session.handlers?.onError === 'function') {
-      session.handlers.onError({
+      session.handlers.onError(buildErrorPayload({
         sessionId: session.sessionId,
         requestId: session.connectId,
         message,
-      })
+        classification,
+      }))
     }
   }
 

@@ -1073,8 +1073,11 @@ export default function ChatWindowView() {
     const handleVoiceError = (payload) => {
       const sessionId = String(payload?.sessionId || '').trim()
       if (!sessionId || sessionId !== activeVoiceSessionIdRef.current) return
+      const kind = String(payload?.kind || '').trim().toLowerCase()
+      const reasonCode = String(payload?.reasonCode || '').trim().toLowerCase()
       const message = String(payload?.message || '').trim() || '语音识别异常'
-      const recoverable = /未返回可识别文本|等待结果超时|连接已关闭/.test(message)
+      const noTextKind = kind === 'asr_no_text' || reasonCode === 'voice_asr_no_text'
+      const recoverable = noTextKind || kind === 'timeout' || /未返回可识别文本|等待结果超时|连接已关闭/.test(message)
       if (transcribingRef.current && recoverable) {
         return
       }
@@ -1097,6 +1100,13 @@ export default function ChatWindowView() {
     const unsubVoiceFinal = window.electronAPI.onVoiceStreamFinal(handleVoiceFinal)
     const unsubVoiceError = window.electronAPI.onVoiceStreamError(handleVoiceError)
 
+    const unsubChatReload = window.electronAPI.onChatReload(({ sessionId }) => {
+      const currentSessionId = getSessionIdByCharId(currentCharIdRef.current)
+      if (sessionId === currentSessionId) {
+        loadChatByCharId(currentCharIdRef.current)
+      }
+    })
+
     if (window?.e2eAPI?.isEnabled) {
       window.__e2eChatVoiceStreamHooks = {
         emitPartial: handleVoicePartial,
@@ -1115,6 +1125,7 @@ export default function ChatWindowView() {
       unsubVoicePartial()
       unsubVoiceFinal()
       unsubVoiceError()
+      unsubChatReload()
       stopActiveStreamRef.current()
       stopRecordingRef.current?.({ finalize: false })
       cancelLiveVoiceSession(true)
@@ -1164,7 +1175,9 @@ export default function ChatWindowView() {
       const hint = buildChatErrorMessage({
         charId: char.id,
         payload: {
+          source: 'llm',
           kind: 'missing_key',
+          reasonCode: 'llm_missing_api_key',
           message: '请先在设置里配置 API Key',
         },
       })
@@ -1194,7 +1207,9 @@ export default function ChatWindowView() {
         const hint = buildChatErrorMessage({
           charId: char.id,
           payload: {
+            source: 'llm',
             kind: 'missing_key',
+            reasonCode: 'llm_missing_api_key',
             message: '请先在设置里配置 API Key',
           },
         })
@@ -1221,7 +1236,10 @@ export default function ChatWindowView() {
       const errText = err.message || String(err)
       const errorPack = buildChatErrorMessage({
         charId: char.id,
-        payload: { message: errText },
+        payload: {
+          source: 'llm',
+          message: errText,
+        },
       })
       setError(errorPack.text)
       activeRequestRef.current = ''

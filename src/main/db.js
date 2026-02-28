@@ -2,6 +2,7 @@ const Database = require('better-sqlite3')
 const path = require('path')
 const { app, safeStorage } = require('electron')
 const log = require('./logger')
+const { PROMPT_IDS, getPromptText } = require('./prompts/prompt-catalog')
 
 const DEFAULT_LLM_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
 const DEFAULT_LLM_MODEL = 'doubao-seed-2-0-mini-260215'
@@ -9,12 +10,16 @@ const DEFAULT_TEMPERATURE = 0.7
 const DEFAULT_MAX_CONTEXT = 20
 const DEFAULT_MULTI_AGENT_ENABLED = true
 const DEFAULT_PET_SCALE = 1
+const DEFAULT_SESSION_ID = 'pet_baihu'
 const MIN_PET_SCALE = 0.6
 const MAX_PET_SCALE = 1.8
 const DEFAULT_CHAT_SIDE = 'right'
 const DEFAULT_CHAT_OFFSET_X = 20
 const DEFAULT_CHAT_OFFSET_Y = -10
-const DEFAULT_MEMORY_SUMMARY_SYSTEM_PROMPT = '你是长期记忆提取器。请把对话总结为 3-6 条短要点（总计不超过 120 字），仅保留长期有价值信息：事实、偏好、目标、约束、约定。不要复述寒暄，不要编造，不要输出无关解释。'
+const DEFAULT_MEMORY_SUMMARY_SYSTEM_PROMPT = getPromptText(
+  PROMPT_IDS.MEMORY_SUMMARY,
+  '你是中期记忆提取器。请提炼长期有价值信息（事实、偏好、目标、约束、约定），禁止寒暄复述与臆测。输出要简洁可复用，避免空泛表达。'
+)
 const DEFAULT_VOICE_ENABLED = false
 const DEFAULT_VOICE_AUTO_PLAY = true
 const DEFAULT_VOICE_REGION = 'cn-beijing'
@@ -279,16 +284,17 @@ function getDb() {
       role       TEXT NOT NULL,
       content    TEXT NOT NULL,
       ts         INTEGER NOT NULL,
-      session_id TEXT NOT NULL DEFAULT 'default'
+      session_id TEXT NOT NULL DEFAULT '${DEFAULT_SESSION_ID}'
     );
 
     CREATE TABLE IF NOT EXISTS memory_summaries (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       summary     TEXT NOT NULL,
+      structured_json TEXT,
       from_msg_id INTEGER NOT NULL,
       to_msg_id   INTEGER NOT NULL,
       ts          INTEGER NOT NULL,
-      session_id  TEXT NOT NULL DEFAULT 'default'
+      session_id  TEXT NOT NULL DEFAULT '${DEFAULT_SESSION_ID}'
     );
 
     CREATE TABLE IF NOT EXISTS user_profile (
@@ -300,17 +306,66 @@ function getDb() {
 
   addCharacterColumns()
   seedDefaultCharacters()
+  runMigrations()
 
   return _db
 }
 
-function addColumnIfMissing(columnName, sqlType, defaultClause = '') {
+function addColumnIfMissing(columnName, sqlType, defaultClause = '', tableName = 'characters') {
   const db = _db
-  const columns = db.prepare('PRAGMA table_info(characters)').all()
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all()
   if (columns.some((column) => column.name === columnName)) return
 
   const defaultSql = defaultClause ? ` ${defaultClause}` : ''
-  db.exec(`ALTER TABLE characters ADD COLUMN ${columnName} ${sqlType}${defaultSql}`)
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}${defaultSql}`)
+}
+
+function runMigrations() {
+  const db = _db
+  let current = Number.parseInt(getAppStateValue('schema_version') || '0', 10)
+  if (!Number.isFinite(current) || current < 0) current = 0
+
+  const migrations = [
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS summary_history (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id    TEXT NOT NULL,
+          summary_text  TEXT NOT NULL,
+          from_msg_id   INTEGER NOT NULL,
+          to_msg_id     INTEGER NOT NULL,
+          input_tokens  INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          created_at    INTEGER NOT NULL
+        )
+      `)
+    },
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS character_memory (
+          session_id         TEXT PRIMARY KEY,
+          relationship_stage TEXT NOT NULL DEFAULT 'new',
+          summary_count      INTEGER NOT NULL DEFAULT 0,
+          updated_at         INTEGER NOT NULL DEFAULT 0
+        )
+      `)
+    },
+    () => {
+      addColumnIfMissing('deleted_at', 'INTEGER', 'DEFAULT NULL', 'memory_summaries')
+    },
+    () => {
+      db.prepare(`UPDATE chat_messages SET session_id = ? WHERE session_id = 'default'`).run(DEFAULT_SESSION_ID)
+      db.prepare(`UPDATE memory_summaries SET session_id = ? WHERE session_id = 'default'`).run(DEFAULT_SESSION_ID)
+    },
+    () => {
+      addColumnIfMissing('structured_json', 'TEXT', '', 'memory_summaries')
+    },
+  ]
+
+  for (let i = current; i < migrations.length; i += 1) {
+    migrations[i]()
+    setAppStateValue('schema_version', String(i + 1))
+  }
 }
 
 function addCharacterColumns() {
@@ -984,7 +1039,24 @@ function setUserProfile(payload) {
   return getUserProfile()
 }
 
-function addChatMessage(role, content, sessionId = 'default') {
+function setUserProfileField(key, value) {
+  const db = getDb()
+  db.prepare(`
+    INSERT INTO user_profile (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(String(key || '').trim(), String(value || ''), Date.now())
+}
+
+function getUserProfileField(key) {
+  const db = getDb()
+  const row = db.prepare('SELECT value FROM user_profile WHERE key = ?').get(String(key || '').trim())
+  return row ? row.value : null
+}
+
+function addChatMessage(role, content, sessionId = DEFAULT_SESSION_ID) {
   const db = getDb()
   const result = db
     .prepare('INSERT INTO chat_messages (role, content, ts, session_id) VALUES (?, ?, ?, ?)')
@@ -993,7 +1065,7 @@ function addChatMessage(role, content, sessionId = 'default') {
   return Number(result.lastInsertRowid)
 }
 
-function getRecentChatMessages(limit = 20, sessionId = 'default') {
+function getRecentChatMessages(limit = 20, sessionId = DEFAULT_SESSION_ID) {
   const db = getDb()
   const rows = db
     .prepare('SELECT id, role, content, ts, session_id as sessionId FROM chat_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?')
@@ -1002,10 +1074,16 @@ function getRecentChatMessages(limit = 20, sessionId = 'default') {
   return rows.reverse()
 }
 
-function getRecentMemorySummaries(limit = 5, sessionId = 'default') {
+function getRecentMemorySummaries(limit = 5, sessionId = DEFAULT_SESSION_ID) {
   const db = getDb()
   const rows = db
-    .prepare('SELECT id, summary, from_msg_id as fromMsgId, to_msg_id as toMsgId, ts, session_id as sessionId FROM memory_summaries WHERE session_id = ? ORDER BY id DESC LIMIT ?')
+    .prepare(`
+      SELECT id, summary, structured_json AS structuredJson, from_msg_id as fromMsgId, to_msg_id as toMsgId, ts, session_id as sessionId
+      FROM memory_summaries
+      WHERE session_id = ? AND deleted_at IS NULL
+      ORDER BY id DESC
+      LIMIT ?
+    `)
     .all(sessionId, limit)
 
   return rows.reverse()
@@ -1050,16 +1128,20 @@ function getChatMessagesBySessionIds(sessionIds = []) {
 
 function getMemorySummariesBySessionIds(sessionIds = []) {
   return queryBySessionIds(sessionIds, `
-    SELECT id, summary, from_msg_id as fromMsgId, to_msg_id as toMsgId, ts, session_id as sessionId
+    SELECT id, summary, structured_json AS structuredJson, from_msg_id as fromMsgId, to_msg_id as toMsgId, ts, session_id as sessionId
     FROM memory_summaries
-    WHERE session_id IN ({placeholders})
+    WHERE session_id IN ({placeholders}) AND deleted_at IS NULL
     ORDER BY session_id ASC, id ASC
   `)
 }
 
-function getUnsummarizedMessages(sessionId = 'default') {
+function getUnsummarizedMessages(sessionId = DEFAULT_SESSION_ID) {
   const db = getDb()
-  const row = db.prepare('SELECT COALESCE(MAX(to_msg_id), 0) as maxToId FROM memory_summaries WHERE session_id = ?').get(sessionId)
+  const row = db
+    // Use the highest historical summarized message as cursor, including soft-deleted rows.
+    // This prevents deleted summaries from being auto-generated again in later runs.
+    .prepare('SELECT COALESCE(MAX(to_msg_id), 0) as maxToId FROM memory_summaries WHERE session_id = ?')
+    .get(sessionId)
   const maxToId = row ? row.maxToId : 0
 
   return db
@@ -1067,13 +1149,105 @@ function getUnsummarizedMessages(sessionId = 'default') {
     .all(sessionId, maxToId)
 }
 
-function addMemorySummary(summary, fromMsgId, toMsgId, sessionId = 'default') {
+function addMemorySummary(summary, fromMsgId, toMsgId, sessionId = DEFAULT_SESSION_ID, options = {}) {
+  let structuredJson = null
+  if (options?.structured && typeof options.structured === 'object') {
+    try {
+      structuredJson = JSON.stringify(options.structured)
+    } catch {
+      structuredJson = null
+    }
+  } else if (typeof options?.structuredJson === 'string') {
+    const raw = options.structuredJson.trim()
+    structuredJson = raw || null
+  }
+
   const db = getDb()
   const result = db
-    .prepare('INSERT INTO memory_summaries (summary, from_msg_id, to_msg_id, ts, session_id) VALUES (?, ?, ?, ?, ?)')
-    .run(summary, fromMsgId, toMsgId, Date.now(), sessionId)
+    .prepare('INSERT INTO memory_summaries (summary, structured_json, from_msg_id, to_msg_id, ts, session_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(summary, structuredJson, fromMsgId, toMsgId, Date.now(), sessionId)
 
   return Number(result.lastInsertRowid)
+}
+
+function addSummaryHistory({
+  sessionId = DEFAULT_SESSION_ID,
+  summaryText = '',
+  fromMsgId = 0,
+  toMsgId = 0,
+  inputTokens = 0,
+  outputTokens = 0,
+  createdAt = Date.now(),
+} = {}) {
+  const db = getDb()
+  const result = db.prepare(`
+    INSERT INTO summary_history (
+      session_id, summary_text, from_msg_id, to_msg_id, input_tokens, output_tokens, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    String(sessionId || DEFAULT_SESSION_ID),
+    String(summaryText || ''),
+    Number(fromMsgId) || 0,
+    Number(toMsgId) || 0,
+    Math.max(0, Number(inputTokens) || 0),
+    Math.max(0, Number(outputTokens) || 0),
+    Number(createdAt) || Date.now()
+  )
+  return Number(result.lastInsertRowid)
+}
+
+function getCharacterMemory(sessionId = DEFAULT_SESSION_ID) {
+  const db = getDb()
+  const sid = String(sessionId || DEFAULT_SESSION_ID)
+  const row = db.prepare('SELECT * FROM character_memory WHERE session_id = ?').get(sid)
+  if (!row) {
+    return {
+      sessionId: sid,
+      relationshipStage: 'new',
+      summaryCount: 0,
+      updatedAt: 0,
+    }
+  }
+  return {
+    sessionId: row.session_id,
+    relationshipStage: row.relationship_stage || 'new',
+    summaryCount: Number.isFinite(row.summary_count) ? row.summary_count : 0,
+    updatedAt: Number.isFinite(row.updated_at) ? row.updated_at : 0,
+  }
+}
+
+function upsertCharacterMemory(sessionId = DEFAULT_SESSION_ID, data = {}) {
+  const db = getDb()
+  const sid = String(sessionId || DEFAULT_SESSION_ID)
+  const relationshipStage = String(data.relationshipStage || 'new')
+  const summaryCount = Number.isFinite(data.summaryCount) ? data.summaryCount : 0
+  db.prepare(`
+    INSERT INTO character_memory (session_id, relationship_stage, summary_count, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      relationship_stage = excluded.relationship_stage,
+      summary_count = excluded.summary_count,
+      updated_at = excluded.updated_at
+  `).run(sid, relationshipStage, summaryCount, Date.now())
+  return getCharacterMemory(sid)
+}
+
+function getMemorySummariesForUI(sessionId = DEFAULT_SESSION_ID) {
+  const db = getDb()
+  return db
+    .prepare(`
+      SELECT id, summary, structured_json AS structuredJson, from_msg_id AS fromMsgId, to_msg_id AS toMsgId, ts
+      FROM memory_summaries
+      WHERE session_id = ? AND deleted_at IS NULL
+      ORDER BY ts DESC
+    `)
+    .all(String(sessionId || DEFAULT_SESSION_ID))
+}
+
+function softDeleteSummary(id) {
+  const db = getDb()
+  db.prepare('UPDATE memory_summaries SET deleted_at = ? WHERE id = ?')
+    .run(Date.now(), id)
 }
 
 module.exports = {
@@ -1083,6 +1257,7 @@ module.exports = {
   DEFAULT_MAX_CONTEXT,
   DEFAULT_MULTI_AGENT_ENABLED,
   DEFAULT_PET_SCALE,
+  DEFAULT_SESSION_ID,
   MIN_PET_SCALE,
   MAX_PET_SCALE,
   DEFAULT_MEMORY_SUMMARY_SYSTEM_PROMPT,
@@ -1097,6 +1272,9 @@ module.exports = {
   reorderCharacters,
   getCharacterById,
   setCharacterChatWindowPrefs,
+  getAppStateValue,
+  setAppStateValue,
+  getBooleanAppStateValue,
   getChatSystemPrompt,
   getMemorySummarySystemPrompt,
   getAppConfig,
@@ -1108,7 +1286,9 @@ module.exports = {
   getLlmCredentials,
   getVoiceCredentials,
   getUserProfile,
+  getUserProfileField,
   setUserProfile,
+  setUserProfileField,
   addChatMessage,
   getRecentChatMessages,
   listAllSessionIds,
@@ -1117,4 +1297,9 @@ module.exports = {
   getRecentMemorySummaries,
   getMemorySummariesBySessionIds,
   addMemorySummary,
+  addSummaryHistory,
+  getCharacterMemory,
+  upsertCharacterMemory,
+  getMemorySummariesForUI,
+  softDeleteSummary,
 }

@@ -38,8 +38,6 @@ function pickLlmConfig(config = {}) {
     model: String(config.model || '').trim(),
     temperature: Number(config.temperature),
     maxContext: Number(config.maxContext),
-    multiAgentEnabled: Boolean(config.multiAgentEnabled),
-    memorySummarySystemPrompt: String(config.memorySummarySystemPrompt || '').trim(),
     apiKeyConfigured: Boolean(config.apiKeyConfigured),
   }
 }
@@ -75,8 +73,6 @@ export default function SettingsView() {
     model: '',
     temperature: 0.7,
     maxContext: 20,
-    multiAgentEnabled: true,
-    memorySummarySystemPrompt: '',
     apiKey: '',
     apiKeyConfigured: false,
     encryptionAvailable: false,
@@ -110,9 +106,12 @@ export default function SettingsView() {
 
   const [status, setStatus] = useState('')
   const [petScale, setPetScale] = useState(1)
-  const [exportScope, setExportScope] = useState('all')
   const [exportingDocs, setExportingDocs] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [proactiveEnabled, setProactiveEnabled] = useState(false)
+  const [memories, setMemories] = useState([])
+  const [memSessionId, setMemSessionId] = useState('')
+  const [promptCatalog, setPromptCatalog] = useState([])
 
   const resetConnectionState = () => {
     setConnectionState({ kind: 'idle', message: '' })
@@ -130,11 +129,12 @@ export default function SettingsView() {
   }
 
   const loadAll = useCallback(async (preferredId = null) => {
-    const [rows, appConfig, userProfile, petUiPrefs] = await Promise.all([
+    const [rows, appConfig, userProfile, petUiPrefs, prompts] = await Promise.all([
       window.electronAPI.listCharacters(),
       window.electronAPI.getAppConfig(),
       window.electronAPI.getProfile(),
       window.electronAPI.getPetUiPrefs(),
+      window.electronAPI.listPromptCatalog().catch(() => []),
     ])
 
     const merged = mergeCharacters(rows)
@@ -147,6 +147,7 @@ export default function SettingsView() {
     const normalizedConfig = buildSettingsConfig(appConfig)
     setConfig(normalizedConfig)
     setSavedConfig(normalizedConfig)
+    setPromptCatalog(Array.isArray(prompts) ? prompts : [])
 
     setApiKeyDirty(false)
     setVoiceAccessKeyDirty(false)
@@ -156,6 +157,30 @@ export default function SettingsView() {
     setProfile(userProfile)
     setSavedProfile(userProfile)
     setPetScale(clampPetScale(petUiPrefs?.scale))
+
+    const memoryFallback = merged.find((item) => item.isActive) || fallback
+    const initSessionId = memoryFallback ? `pet_${memoryFallback.id}` : ''
+    setMemSessionId(initSessionId)
+
+    try {
+      const proactive = await window.electronAPI.getProactiveEnabled()
+      setProactiveEnabled(Boolean(proactive))
+    } catch (error) {
+      setProactiveEnabled(false)
+      setStatus(`主动发话配置读取失败，已按关闭处理：${getErrorMessage(error)}`)
+    }
+
+    try {
+      if (initSessionId) {
+        const mems = await window.electronAPI.listMemories(initSessionId)
+        setMemories(mems)
+      } else {
+        setMemories([])
+      }
+    } catch (error) {
+      setMemories([])
+      setStatus(`记忆列表读取失败：${getErrorMessage(error)}`)
+    }
   }, [selectedId])
 
   useEffect(() => {
@@ -181,6 +206,15 @@ export default function SettingsView() {
       return text.includes(keyword)
     })
   }, [characters, searchQuery])
+
+  const memoryRoles = useMemo(() => {
+    return characters.filter((item) => item.isActive)
+  }, [characters])
+
+  const selectedMemoryRoleId = useMemo(() => {
+    const sid = String(memSessionId || '').trim()
+    return sid.startsWith('pet_') ? sid.slice(4) : ''
+  }, [memSessionId])
 
   const editorDirty = useMemo(() => {
     return !isDraftEqual(editorDraft, editorOriginal)
@@ -286,17 +320,8 @@ export default function SettingsView() {
 
   const saveLlmConfig = async () => {
     try {
-      const memoryPrompt = String(config.memorySummarySystemPrompt || '').trim()
-      if (memoryPrompt.length < 20 || memoryPrompt.length > 1200) {
-        setLlmSaveState({ kind: 'error', message: '全局记忆提取提示词长度需在 20 到 1200 字之间' })
-        return
-      }
-
       setSavingLlmConfig(true)
-      const payload = buildLlmConfigSavePayload(
-        { ...config, memorySummarySystemPrompt: memoryPrompt },
-        { apiKeyDirty }
-      )
+      const payload = buildLlmConfigSavePayload(config, { apiKeyDirty })
       const nextConfig = await window.electronAPI.setAppConfig(payload)
       const nextSettings = buildSettingsConfig(nextConfig)
 
@@ -306,8 +331,6 @@ export default function SettingsView() {
         model: nextSettings.model,
         temperature: nextSettings.temperature,
         maxContext: nextSettings.maxContext,
-        multiAgentEnabled: nextSettings.multiAgentEnabled,
-        memorySummarySystemPrompt: nextSettings.memorySummarySystemPrompt,
         apiKey: '',
         apiKeyConfigured: nextSettings.apiKeyConfigured,
         encryptionAvailable: nextSettings.encryptionAvailable,
@@ -411,34 +434,75 @@ export default function SettingsView() {
     }
   }
 
-  const runSummary = async () => {
-    try {
-      const result = await window.electronAPI.runMemorySummary({ threshold: 10, maxMessages: 40 })
-      if (result.created) {
-        setStatus(`已生成记忆摘要（消息 ${result.from}-${result.to}）`)
-      } else {
-        setStatus(`未触发摘要：${result.reason}（待处理 ${result.pending || 0} 条）`)
-      }
-    } catch (error) {
-      setErrorStatus('执行摘要失败', error)
+  const buildExportSuccessMessage = (result) => {
+    if (result?.exportType === 'all_split_by_role') {
+      return `导出完成：按角色分开导出 ${result.items?.length || 0} 份（md/json/jsonl；对话 ${result.chatCount || 0}，摘要 ${result.summaryCount || 0}）`
     }
+    if (result?.exportType === 'role') {
+      const item = Array.isArray(result.items) ? result.items[0] : null
+      const roleLabel = String(item?.charName || item?.charId || item?.sessionId || '当前角色')
+      return `导出完成：${roleLabel}（md/json/jsonl；对话 ${result.chatCount || 0}，摘要 ${result.summaryCount || 0}）`
+    }
+    return `导出完成：${result?.baseName || 'muyu-export'}（md/json/jsonl；会话 ${result?.sessionCount || 0}，对话 ${result?.chatCount || 0}，摘要 ${result?.summaryCount || 0}）`
   }
 
-  const exportDocs = async () => {
+  const exportDocs = async (payload) => {
     try {
       setExportingDocs(true)
-      const result = await window.electronAPI.exportDocs({ scope: exportScope })
+      const result = await window.electronAPI.exportDocs(payload || {})
       if (result?.canceled) {
         setStatus('已取消导出')
         return
       }
-      setStatus(
-        `导出完成：${result.baseName}（会话 ${result.sessionCount}，对话 ${result.chatCount}，摘要 ${result.summaryCount}）`
-      )
+      setStatus(buildExportSuccessMessage(result))
     } catch (error) {
       setErrorStatus('导出失败', error)
     } finally {
       setExportingDocs(false)
+    }
+  }
+
+  const exportAllMemories = async () => {
+    const splitByRole = window.confirm('导出所有内容：点击“确定”按角色分开导出；点击“取消”合并导出。')
+    return exportDocs({
+      mode: 'all',
+      allStrategy: splitByRole ? 'split_by_role' : 'merged',
+    })
+  }
+
+  const exportSelectedRoleMemories = async () => {
+    if (!selectedMemoryRoleId) {
+      setStatus('请先在“查看角色记忆”中选择角色，再导出对应角色内容')
+      return
+    }
+    return exportDocs({
+      mode: 'role',
+      roleSessionId: `pet_${selectedMemoryRoleId}`,
+    })
+  }
+
+  const loadMemories = async (sessionId) => {
+    const sid = String(sessionId || '').trim()
+    if (!sid) {
+      setMemories([])
+      return
+    }
+    try {
+      const mems = await window.electronAPI.listMemories(sid)
+      setMemories(mems)
+    } catch (error) {
+      setErrorStatus('读取记忆失败', error)
+    }
+  }
+
+  const handleDeleteMemory = async (id) => {
+    if (!window.confirm('确认删除这条记忆吗？删除后将不再用于对话，且无法恢复。')) return
+    try {
+      await window.electronAPI.deleteMemory(id)
+      setMemories((prev) => prev.filter((m) => m.id !== id))
+      setStatus('记忆已删除')
+    } catch (error) {
+      setErrorStatus('删除记忆失败', error)
     }
   }
 
@@ -705,14 +769,9 @@ export default function SettingsView() {
 
           <details className="advanced-group" data-testid="settings-llm-advanced">
             <summary>高级 AI 配置</summary>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={Boolean(config.multiAgentEnabled)}
-                onChange={(event) => updateConfigField({ multiAgentEnabled: event.target.checked })}
-              />
-              开启多智能体模式（角色风格 + 任务建议 + 安全约束协作）
-            </label>
+            <p className="section-desc">
+              当前为固定流程：输入安全校验，角色主模型整条生成，输出安全校验；若不通过则整条重生 1 次，仍不通过走固定兜底，再分段流式展示并语音播报。
+            </p>
             <div className="form-grid">
               <label>
                 Temperature
@@ -732,16 +791,25 @@ export default function SettingsView() {
                 />
               </label>
             </div>
-            <label>
-              全局记忆提取提示词（20-1200字）
-              <textarea
-                rows={6}
-                value={config.memorySummarySystemPrompt}
-                onChange={(event) => updateConfigField({ memorySummarySystemPrompt: event.target.value })}
-                placeholder="用于长期记忆摘要提取"
-              />
-            </label>
-            <p className="field-hint">{String(config.memorySummarySystemPrompt || '').trim().length}/1200</p>
+            <div className="readonly-prompts">
+              <p className="section-desc">高级提示词当前为只读展示（MVP）：用户仅可编辑角色提示词。</p>
+              {promptCatalog.length === 0 ? (
+                <p className="empty-hint">暂无可展示的高级提示词</p>
+              ) : (
+                <div className="readonly-prompt-list">
+                  {promptCatalog.map((item) => (
+                    <details key={item.id} className="readonly-prompt-item">
+                      <summary>
+                        <span>{item.title}</span>
+                        <span className="readonly-prompt-meta">{item.scope} · 只读</span>
+                      </summary>
+                      <p className="section-desc">{item.description}</p>
+                      <textarea rows={5} value={String(item.content || '')} readOnly />
+                    </details>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="button-row">
               <button className="btn btn--danger" onClick={clearApiKey}>清空 API Key</button>
             </div>
@@ -881,47 +949,106 @@ export default function SettingsView() {
 
         <section className="settings-panel">
           <div className="panel-head">
+            <h2>记忆</h2>
+            <p>记忆会自动沉淀。你可以在这里维护用户档案、导出记忆、查看角色记忆。</p>
+          </div>
+
+          <div className="memory-subsection">
             <div className="panel-head--row">
-              <h2>用户档案</h2>
+              <h3>用户档案</h3>
               <span className={`panel-dirty${profileDirty ? ' is-dirty' : ''}`}>{profileDirty ? '有未保存更改' : '已保存'}</span>
             </div>
-            <p>先保存档案信息，再按需生成摘要或导出记忆文档。</p>
-          </div>
-          <div className="form-grid">
-            <label>姓名<input value={profile.name || ''} onChange={(event) => setProfile((prev) => ({ ...prev, name: event.target.value }))} /></label>
-            <label>职业<input value={profile.occupation || ''} onChange={(event) => setProfile((prev) => ({ ...prev, occupation: event.target.value }))} /></label>
-            <label>个性标签<input value={profile.traits || ''} onChange={(event) => setProfile((prev) => ({ ...prev, traits: event.target.value }))} /></label>
-          </div>
-          <label>
-            备注
-            <textarea rows={4} value={profile.notes || ''} onChange={(event) => setProfile((prev) => ({ ...prev, notes: event.target.value }))} />
-          </label>
-          <div className="button-row">
-            <button className="btn btn--primary" onClick={saveProfile} disabled={!profileDirty}>保存档案</button>
-          </div>
-          <details className="advanced-group" data-testid="settings-profile-advanced">
-            <summary>记忆高级操作</summary>
-            <div className="button-row">
-              <button className="btn" onClick={runSummary}>立即生成摘要</button>
+            <div className="form-grid">
+              <label>姓名<input value={profile.name || ''} onChange={(event) => setProfile((prev) => ({ ...prev, name: event.target.value }))} /></label>
+              <label>职业<input value={profile.occupation || ''} onChange={(event) => setProfile((prev) => ({ ...prev, occupation: event.target.value }))} /></label>
+              <label>个性标签<input value={profile.traits || ''} onChange={(event) => setProfile((prev) => ({ ...prev, traits: event.target.value }))} /></label>
             </div>
+            <label>
+              备注
+              <textarea rows={4} value={profile.notes || ''} onChange={(event) => setProfile((prev) => ({ ...prev, notes: event.target.value }))} />
+            </label>
             <div className="button-row">
-              <label className="export-scope-label">
-                导出范围
-                <select
-                  className="export-scope-select"
-                  value={exportScope}
-                  onChange={(event) => setExportScope(event.target.value)}
-                >
-                  <option value="all">全部会话</option>
-                  <option value="current">当前角色会话</option>
-                  <option value="default">默认会话</option>
-                </select>
-              </label>
-              <button className="btn" onClick={exportDocs} disabled={exportingDocs}>
-                {exportingDocs ? '导出中...' : '导出文档（MD+JSONL）'}
+              <button className="btn btn--primary" onClick={saveProfile} disabled={!profileDirty}>保存档案</button>
+            </div>
+            <label className="switch-row">
+              <span>主动发话</span>
+              <input
+                type="checkbox"
+                checked={proactiveEnabled}
+                onChange={async (e) => {
+                  const next = e.target.checked
+                  try {
+                    await window.electronAPI.setProactiveEnabled(next)
+                    setProactiveEnabled(next)
+                  } catch (error) {
+                    setErrorStatus('主动发话设置失败', error)
+                  }
+                }}
+              />
+              <span className="field-hint">开启后宠物会在你缺席或生日时主动问候</span>
+            </label>
+          </div>
+
+          <div className="memory-subsection">
+            <h3>导出记忆</h3>
+            <p className="section-desc">
+              支持导出所有内容或导出当前选中角色。每份导出包含 Markdown 与 JSON（同时保留 JSONL 兼容文件）。
+              导出中的“长期记忆”指用户档案，“阶段记忆摘要（中期）”来自会话摘要。
+            </p>
+            <div className="button-row">
+              <button className="btn" onClick={exportAllMemories} disabled={exportingDocs}>
+                {exportingDocs ? '导出中...' : '导出所有内容'}
+              </button>
+              <button className="btn" onClick={exportSelectedRoleMemories} disabled={exportingDocs || !selectedMemoryRoleId}>
+                {exportingDocs ? '导出中...' : '导出当前选中角色'}
               </button>
             </div>
-          </details>
+            <p className="field-hint">按角色分开导出时不包含默认会话。</p>
+          </div>
+
+          <div className="memory-subsection">
+            <h3>查看角色记忆</h3>
+            {memoryRoles.length === 0 ? (
+              <p className="empty-hint">暂无可查看的启用角色</p>
+            ) : (
+              <div className="memory-role-tabs">
+                {memoryRoles.map((role) => (
+                  <button
+                    key={role.id}
+                    className={`memory-role-tab${selectedMemoryRoleId === role.id ? ' is-active' : ''}`}
+                    onClick={() => {
+                      const sid = `pet_${role.id}`
+                      setMemSessionId(sid)
+                      loadMemories(sid)
+                    }}
+                  >
+                    {role.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {memories.length === 0 ? (
+              <p className="empty-hint">暂无记忆记录</p>
+            ) : (
+              <div className="memory-list">
+                {memories.map((m) => (
+                  <div key={m.id} className="memory-item">
+                    <span className="memory-ts">
+                      {new Date(m.ts).toLocaleDateString('zh-CN')}
+                    </span>
+                    <p className="memory-text">{m.summary}</p>
+                    <button
+                      className="btn btn--danger btn--sm"
+                      onClick={() => handleDeleteMemory(m.id)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </section>
       </div>
 

@@ -46,6 +46,7 @@ const IPC = Object.freeze({
   PET_SCALE_RESET: 'pet-scale-reset',
   PROFILE_GET: 'profile-get',
   PROFILE_SET: 'profile-set',
+  PROMPTS_LIST: 'prompts-list',
 
   // Chat / LLM / memory
   CHAT_GET_RECENT: 'chat-get-recent',
@@ -63,7 +64,11 @@ const IPC = Object.freeze({
   VOICE_STREAM_FINAL: 'voice-stream-final',
   VOICE_STREAM_ERROR: 'voice-stream-error',
   EXPORT_DOCS: 'export-docs',
-  MEMORY_RUN_SUMMARY: 'memory-run-summary',
+  PROACTIVE_ENABLED_GET: 'proactive-enabled-get',
+  PROACTIVE_ENABLED_SET: 'proactive-enabled-set',
+  CHAT_RELOAD: 'chat-reload',
+  MEMORY_LIST: 'memory-list',
+  MEMORY_DELETE: 'memory-delete',
 
   // Events (main -> renderer)
   FORCE_SAVE: 'force-save',

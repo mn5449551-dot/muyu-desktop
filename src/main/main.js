@@ -8,6 +8,8 @@ const LlmService = require('./services/llm-service')
 const MemoryService = require('./services/memory-service')
 const ExportService = require('./services/export-service')
 const VoiceService = require('./services/voice-service')
+const { daysDiff, toLocalMMDD } = require('./utils/time')
+const { listReadonlyPrompts } = require('./prompts/prompt-catalog')
 
 const isDev = !app.isPackaged
 
@@ -60,6 +62,7 @@ const CHAT_GAP = 12
 const CHAT_DEFAULT_SIDE = 'right'
 const CHAT_DEFAULT_OFFSET_X = 20
 const CHAT_DEFAULT_OFFSET_Y = -10
+const DEFAULT_SESSION_ID = db.DEFAULT_SESSION_ID || 'pet_baihu'
 
 function getRendererEntry() {
   return path.join(__dirname, '../../dist/renderer/index.html')
@@ -190,6 +193,10 @@ function createMainWindow() {
   }
 
   log.info('main window created')
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    setTimeout(() => checkProactiveGreeting(), 1500)
+  })
 
   mainWindow.on('closed', () => {
     mainWindow = null
@@ -711,12 +718,6 @@ function getRuntimeState() {
   }
 }
 
-const EXPORT_SCOPES = new Set(['all', 'current', 'default'])
-
-function resolveExportScope(scope) {
-  return EXPORT_SCOPES.has(scope) ? scope : 'all'
-}
-
 function getDialogOwnerWindow() {
   if (settingsWindow && !settingsWindow.isDestroyed()) return settingsWindow
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
@@ -907,18 +908,23 @@ function registerConfigIpcHandlers() {
 
   ipcMain.handle(IPC.PROFILE_GET, () => db.getUserProfile())
   ipcMain.handle(IPC.PROFILE_SET, (_event, payload) => db.setUserProfile(payload || {}))
+  ipcMain.handle(IPC.PROMPTS_LIST, () => {
+    return listReadonlyPrompts({
+      memorySummaryPrompt: db.getMemorySummarySystemPrompt(),
+    })
+  })
 }
 
 function registerLlmIpcHandlers() {
   ipcMain.handle(IPC.CHAT_GET_RECENT, (_event, payload) => {
     const limit = payload?.limit || 20
-    const sessionId = payload?.sessionId || 'default'
+    const sessionId = String(payload?.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
     return db.getRecentChatMessages(limit, sessionId)
   })
 
   ipcMain.handle(IPC.LLM_STREAM_CHAT, (event, payload) => {
     const prompt = payload?.prompt || ''
-    const sessionId = payload?.sessionId || 'default'
+    const sessionId = String(payload?.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
     const charId = payload?.charId || ''
 
     return llmService.startStreamChat({
@@ -987,27 +993,104 @@ function registerVoiceIpcHandlers() {
 
 function registerExportAndMemoryIpcHandlers() {
   ipcMain.handle(IPC.EXPORT_DOCS, async (_event, payload) => {
-    const scope = resolveExportScope(payload?.scope)
     const result = await chooseExportDirectory()
     if (result.canceled || !result.filePaths[0]) {
       return { canceled: true }
     }
+    const mode = String(payload?.mode || 'all').trim() || 'all'
+    const allStrategy = String(payload?.allStrategy || 'merged').trim() || 'merged'
+    const roleSessionId = String(payload?.roleSessionId || '').trim()
     return {
       canceled: false,
       ...exportService.exportToDirectory({
-        scope,
+        mode,
+        allStrategy,
+        roleSessionId,
         dirPath: result.filePaths[0],
       }),
     }
   })
 
-  ipcMain.handle(IPC.MEMORY_RUN_SUMMARY, async (_event, payload) => {
-    return memoryService.runSummaryIfNeeded({
-      sessionId: payload?.sessionId || 'default',
-      threshold: payload?.threshold || 20,
-      maxMessages: payload?.maxMessages || 40,
-    })
+  ipcMain.handle(IPC.PROACTIVE_ENABLED_GET, () =>
+    db.getBooleanAppStateValue('proactive_enabled', false)
+  )
+
+  ipcMain.handle(IPC.PROACTIVE_ENABLED_SET, (_, val) =>
+    db.setAppStateValue('proactive_enabled', val ? '1' : '0')
+  )
+
+  ipcMain.handle(IPC.MEMORY_LIST, (_, sessionId) =>
+    db.getMemorySummariesForUI(String(sessionId || DEFAULT_SESSION_ID))
+  )
+
+  ipcMain.handle(IPC.MEMORY_DELETE, (_, id) => {
+    db.softDeleteSummary(id)
+    return { ok: true }
   })
+}
+
+async function checkProactiveGreeting() {
+  const now = Date.now()
+  const proactiveEnabled = db.getBooleanAppStateValue('proactive_enabled', false)
+  if (!proactiveEnabled) {
+    db.setAppStateValue('last_open_at', String(now))
+    return
+  }
+
+  const todayUTC = new Date(now).toISOString().slice(0, 10)
+
+  const lastOpenAt = parseInt(db.getAppStateValue('last_open_at') || '0', 10)
+  const absentDays = lastOpenAt ? daysDiff(now, lastOpenAt) : 0
+  const absenceLockKey = `proactive_absence_${todayUTC}`
+
+  let proactiveType = null
+  let daysSince = 0
+
+  if (absentDays > 3 && !db.getAppStateValue(absenceLockKey)) {
+    db.setAppStateValue(absenceLockKey, '1')
+    proactiveType = 'absence'
+    daysSince = absentDays
+  }
+
+  if (!proactiveType) {
+    const birthday = db.getUserProfileField('birthday')
+    if (birthday) {
+      const todayMMDD = toLocalMMDD(now)
+      const birthdayLockKey = `proactive_birthday_${todayUTC}`
+      if (todayMMDD === birthday && !db.getAppStateValue(birthdayLockKey)) {
+        db.setAppStateValue(birthdayLockKey, '1')
+        proactiveType = 'birthday'
+      }
+    }
+  }
+
+  db.setAppStateValue('last_open_at', String(now))
+
+  if (!proactiveType) return
+
+  const charId = getCurrentCharId()
+  const sessionId = `pet_${charId}`
+  const chatSystemPrompt = db.getChatSystemPrompt(charId)
+
+  try {
+    const greeting = await llmService.generateProactiveGreeting({
+      sessionId,
+      proactiveType,
+      daysSince,
+      chatSystemPrompt,
+    })
+    if (!greeting) return
+
+    db.addChatMessage('assistant', greeting, sessionId)
+    openChatWindow({ charId })
+
+    setTimeout(() => {
+      sendToAllWindows(IPC.CHAT_RELOAD, { sessionId })
+    }, 500)
+  } catch (err) {
+    log.warn('[proactive-greeting]', err.message)
+    openChatWindow({ charId })
+  }
 }
 
 function registerIpcHandlers() {
@@ -1051,7 +1134,10 @@ app.on('before-quit', (event) => {
   }
 
   setTimeout(() => {
-    const sessionIds = new Set(['default'])
+    const sessionIds = new Set(db.listAllSessionIds())
+    if (sessionIds.size === 0) {
+      sessionIds.add(DEFAULT_SESSION_ID)
+    }
     db.listCharacters()
       .filter((item) => item.isActive)
       .forEach((item) => sessionIds.add(`pet_${item.id}`))
@@ -1060,8 +1146,9 @@ app.on('before-quit', (event) => {
     Promise.allSettled(
       sessionIdList.map((sessionId) => memoryService.runSummaryIfNeeded({
         sessionId,
-        threshold: 10,
+        threshold: 20,
         maxMessages: 40,
+        isQuitting: true,
       }))
     )
       .then((results) => {

@@ -47,10 +47,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resetPetScale: () => ipcRenderer.invoke('pet-scale-reset'),
   getProfile: () => ipcRenderer.invoke('profile-get'),
   setProfile: (payload) => ipcRenderer.invoke('profile-set', payload),
+  listPromptCatalog: () => ipcRenderer.invoke('prompts-list'),
 
   // Chat + LLM + memory
-  getChatRecent: (limit = 20, sessionId = 'default') => ipcRenderer.invoke('chat-get-recent', { limit, sessionId }),
-  startLlmStream: (prompt, sessionId = 'default', charId = '') => ipcRenderer.invoke('llm-stream-chat', { prompt, sessionId, charId }),
+  getChatRecent: (limit = 20, sessionId = 'pet_baihu') => ipcRenderer.invoke('chat-get-recent', { limit, sessionId }),
+  startLlmStream: (prompt, sessionId = 'pet_baihu', charId = '') => ipcRenderer.invoke('llm-stream-chat', { prompt, sessionId, charId }),
   cancelLlm: (requestId) => ipcRenderer.invoke('llm-cancel', { requestId }),
   testLlmConnection: (payload) => ipcRenderer.invoke('llm-test-connection', payload || {}),
   transcribeVoice: (payload) => ipcRenderer.invoke('voice-transcribe', payload || {}),
@@ -61,7 +62,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopVoiceStream: (payload) => ipcRenderer.invoke('voice-stream-stop', payload || {}),
   cancelVoiceStream: (payload) => ipcRenderer.invoke('voice-stream-cancel', payload || {}),
   exportDocs: (payload) => ipcRenderer.invoke('export-docs', payload || {}),
-  runMemorySummary: (payload) => ipcRenderer.invoke('memory-run-summary', payload || {}),
+  getProactiveEnabled: () => ipcRenderer.invoke('proactive-enabled-get'),
+  setProactiveEnabled: (val) => ipcRenderer.invoke('proactive-enabled-set', val),
+  listMemories: (sessionId) => ipcRenderer.invoke('memory-list', sessionId),
+  deleteMemory: (id) => ipcRenderer.invoke('memory-delete', id),
 
   // Events
   onForceSave: (callback) => onChannel('force-save', callback),
@@ -73,6 +77,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onVoiceStreamPartial: (callback) => onChannel('voice-stream-partial', callback),
   onVoiceStreamFinal: (callback) => onChannel('voice-stream-final', callback),
   onVoiceStreamError: (callback) => onChannel('voice-stream-error', callback),
+  onChatReload: (callback) => onChannel('chat-reload', callback),
 })
 
 if (isE2E) {
