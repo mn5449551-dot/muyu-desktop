@@ -26,8 +26,7 @@ const PROMPT_CATALOG = Object.freeze({
 1) 用户当前输入（本轮）；
 2) 最近对话上下文；
 3) 用户档案（稳定信息）；
-4) 关系状态；
-5) 阶段记忆摘要（中期）。
+4) 阶段记忆摘要（中期）。
 
 执行规则：
 - 若历史记忆与当前表达冲突，以当前表达为准。
@@ -54,7 +53,7 @@ const PROMPT_CATALOG = Object.freeze({
     scope: 'memory',
     editable: false,
     description: '从最近对话提炼长期有价值信息的系统提示词。',
-    template: '你是中期记忆提取器。请提炼长期有价值信息（事实、偏好、目标、约束、约定），禁止寒暄复述与臆测。输出要简洁可复用，避免空泛表达。',
+    template: '你是中期记忆提取器。提炼对话中有价值的信息：目标、待办、约束、偏好、风险、重要情感事件（key_moments）、未闭合话题（open_threads）。忽略无意义字符。不得编造，输出内容必须可被下一轮对话直接使用。',
   },
   [PROMPT_IDS.PROFILE_EXTRACT]: {
     title: '长期档案提取',

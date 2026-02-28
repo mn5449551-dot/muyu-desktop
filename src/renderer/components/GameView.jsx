@@ -3,6 +3,7 @@ import { findById, mergeCharacters } from '../../utils/characters'
 import {
   createFloatText,
   createHitParticles,
+  getMilestoneDialogue,
   getTapHudText,
   resolveScaleHotkeyAction,
   shouldStartDragging,
@@ -14,7 +15,7 @@ const HOTKEY_SCALE_STEP = 0.05
 const PET_SCALE_MIN = 0.6
 const PET_SCALE_MAX = 1.8
 
-export default function GameView({ initialCount, initialChar, initialCharacters }) {
+export default function GameView({ initialCount, initialChar, initialCharacters, initialReachedMilestones }) {
   const [characters, setCharacters] = useState(initialCharacters)
   const [char, setChar] = useState(initialChar)
   const [count, setCount] = useState(initialCount)
@@ -25,6 +26,8 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
   const [floatTexts, setFloatTexts] = useState([])
   const [particles, setParticles] = useState([])
   const [tapHud, setTapHud] = useState(null)
+  const [milestoneBubble, setMilestoneBubble] = useState(null)
+  const [reachedMilestones, setReachedMilestones] = useState(() => new Set(initialReachedMilestones || []))
   const [eventReady, setEventReady] = useState(false)
 
   const useARef = useRef(true)
@@ -37,6 +40,7 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
 
   const hitTimerRef = useRef(null)
   const hudTimerRef = useRef(null)
+  const milestoneBubbleTimerRef = useRef(null)
   const switchTimerRef = useRef(null)
   const switchResetTimerRef = useRef(null)
 
@@ -49,6 +53,7 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
   const dragModeRef = useRef(false)
   const suppressTapRef = useRef(false)
   const pressStartPointRef = useRef({ x: 0, y: 0 })
+  const pressVisibleTopInsetRef = useRef(0)
   const ignoreMouseRef = useRef(null)
   const hitAreasRef = useRef([])
   const dragLatestPosRef = useRef({ x: 0, y: 0 })
@@ -196,6 +201,7 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
       window.removeEventListener('beforeunload', handleUnload)
       if (hitTimerRef.current) clearTimeout(hitTimerRef.current)
       if (hudTimerRef.current) clearTimeout(hudTimerRef.current)
+      if (milestoneBubbleTimerRef.current) clearTimeout(milestoneBubbleTimerRef.current)
       if (switchTimerRef.current) clearTimeout(switchTimerRef.current)
       if (switchResetTimerRef.current) clearTimeout(switchResetTimerRef.current)
       ephemeralTimersRef.current.forEach((id) => clearTimeout(id))
@@ -278,7 +284,11 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
     suppressTapRef.current = true
     dragLatestPosRef.current = { x: screenX, y: screenY }
     dragLastSentPosRef.current = { x: Number.NaN, y: Number.NaN }
-    window.electronAPI.startPetDrag(pressStartPointRef.current.x, pressStartPointRef.current.y)
+    window.electronAPI.startPetDrag(
+      pressStartPointRef.current.x,
+      pressStartPointRef.current.y,
+      pressVisibleTopInsetRef.current
+    )
     ignoreMouseRef.current = false
     window.electronAPI.setIgnoreMouse(false)
     scheduleDragMove(screenX, screenY)
@@ -312,6 +322,9 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
     pressActiveRef.current = true
     dragModeRef.current = false
     pressStartPointRef.current = { x: event.screenX, y: event.screenY }
+    const rect = event.currentTarget?.getBoundingClientRect?.()
+    const topInset = Number(rect?.top)
+    pressVisibleTopInsetRef.current = Number.isFinite(topInset) ? Math.max(0, Math.round(topInset)) : 0
   }, [])
 
   useEffect(() => {
@@ -374,17 +387,29 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
 
     setIsHit(true)
     setCount(newCount)
-    setTapHud({ id: `hud_${newCount}_${Date.now()}`, text: getTapHudText(newCount) })
+    const hudText = getTapHudText(newCount)
+    setTapHud({ id: `hud_${newCount}_${Date.now()}`, text: hudText })
 
     if (hitTimerRef.current) clearTimeout(hitTimerRef.current)
     hitTimerRef.current = setTimeout(() => setIsHit(false), 300)
 
     if (hudTimerRef.current) clearTimeout(hudTimerRef.current)
-    hudTimerRef.current = setTimeout(() => setTapHud(null), 800)
+    hudTimerRef.current = setTimeout(() => {
+      setTapHud(null)
+    }, 800)
+
+    const dialogue = getMilestoneDialogue(newCount, char.id)
+    if (dialogue && !reachedMilestones.has(newCount)) {
+      setReachedMilestones((prev) => new Set([...prev, newCount]))
+      window.electronAPI.saveReachedMilestone(newCount)
+      setMilestoneBubble({ id: `ms_${newCount}`, text: dialogue })
+      if (milestoneBubbleTimerRef.current) clearTimeout(milestoneBubbleTimerRef.current)
+      milestoneBubbleTimerRef.current = setTimeout(() => setMilestoneBubble(null), 3100)
+    }
 
     if (newCount % 10 === 0) window.electronAPI.saveCount(newCount)
     playSound(char)
-  }, [char, switchClass, playSound])
+  }, [char, switchClass, playSound, reachedMilestones])
 
   const showScaleHud = useCallback((scale) => {
     const value = Number(scale)
@@ -394,7 +419,9 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
       text: `大小 ${Math.round(value * 100)}%`,
     })
     if (hudTimerRef.current) clearTimeout(hudTimerRef.current)
-    hudTimerRef.current = setTimeout(() => setTapHud(null), 800)
+    hudTimerRef.current = setTimeout(() => {
+      setTapHud(null)
+    }, 800)
   }, [])
 
   useEffect(() => {
@@ -462,6 +489,12 @@ export default function GameView({ initialCount, initialChar, initialCharacters 
   return (
     <div className="page" data-testid="pet-page" data-char-id={char.id} data-count={count} data-ready={eventReady ? '1' : '0'}>
       <div className={`shake-wrap ${shakeClass}`}>
+        {milestoneBubble && (
+          <div key={milestoneBubble.id} className="milestone-bubble">
+            {milestoneBubble.text}
+          </div>
+        )}
+
         {tapHud && (
           <div key={tapHud.id} className="tap-hud">
             {tapHud.text}

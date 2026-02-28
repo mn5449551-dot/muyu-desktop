@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { mergeCharacters } from '../../utils/characters'
 import RoleCardGrid from './RoleCardGrid'
 import RoleEditorModal from './RoleEditorModal'
@@ -20,9 +20,50 @@ import {
   parseRareAudioPool,
   toCharacterForm,
 } from './settings-config-utils'
+import {
+  MEMORY_STRUCTURED_KEYS,
+  parseMemoryListResponse,
+  parseStructuredMemory,
+} from './memory-view-utils'
 import '../styles/settings.css'
 
 const PET_SCALE_STEP = 0.01
+const RECENT_MEMORY_LIMIT = 5
+const MEMORY_ROLE_ALL = '__all__'
+const EXPORT_SCOPE_KEYS = ['chats', 'summaries', 'profile']
+const EXPORT_SCOPE_LABELS = {
+  chats: '聊天历史',
+  summaries: '阶段摘要',
+  profile: '用户档案',
+}
+const EXPORT_FORMAT_KEYS = ['markdown', 'json', 'jsonl']
+const EXPORT_FORMAT_LABELS = {
+  markdown: 'Markdown',
+  json: 'JSON',
+  jsonl: 'JSONL',
+}
+
+function clampUiScalePosition(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 50
+  return Math.max(0, Math.min(100, n))
+}
+
+function scaleToUiScalePosition(scale) {
+  const s = clampPetScale(scale)
+  if (s <= 1) {
+    return ((s - PET_SCALE_MIN) / (1 - PET_SCALE_MIN)) * 50
+  }
+  return 50 + ((s - 1) / (PET_SCALE_MAX - 1)) * 50
+}
+
+function uiScalePositionToScale(position) {
+  const p = clampUiScalePosition(position)
+  if (p <= 50) {
+    return clampPetScale(PET_SCALE_MIN + (p / 50) * (1 - PET_SCALE_MIN))
+  }
+  return clampPetScale(1 + ((p - 50) / 50) * (PET_SCALE_MAX - 1))
+}
 
 function isDraftEqual(left, right) {
   return JSON.stringify(left || {}) === JSON.stringify(right || {})
@@ -101,24 +142,69 @@ export default function SettingsView() {
   const [llmSaveState, setLlmSaveState] = useState({ kind: 'idle', message: '' })
   const [voiceSaveState, setVoiceSaveState] = useState({ kind: 'idle', message: '' })
 
-  const [profile, setProfile] = useState({ name: '', occupation: '', traits: '', notes: '' })
-  const [savedProfile, setSavedProfile] = useState({ name: '', occupation: '', traits: '', notes: '' })
+  const [profile, setProfile] = useState({
+    name: '',
+    occupation: '',
+    birthday: '',
+    birthday_year: '',
+    traits: '',
+    notes: '',
+  })
+  const [savedProfile, setSavedProfile] = useState({
+    name: '',
+    occupation: '',
+    birthday: '',
+    birthday_year: '',
+    traits: '',
+    notes: '',
+  })
 
   const [status, setStatus] = useState('')
   const [petScale, setPetScale] = useState(1)
   const [exportingDocs, setExportingDocs] = useState(false)
+  const [exportScopes, setExportScopes] = useState({
+    all: true,
+    chats: true,
+    summaries: true,
+    profile: true,
+  })
+  const [exportFormats, setExportFormats] = useState({
+    markdown: true,
+    json: false,
+    jsonl: false,
+  })
+  const [exportOptionsExpanded, setExportOptionsExpanded] = useState(false)
+  const [exportRoleId, setExportRoleId] = useState(MEMORY_ROLE_ALL)
   const [loading, setLoading] = useState(true)
-  const [proactiveEnabled, setProactiveEnabled] = useState(false)
-  const [memories, setMemories] = useState([])
+  const [recentMemories, setRecentMemories] = useState([])
+  const [recentMemoryTotal, setRecentMemoryTotal] = useState(0)
   const [memSessionId, setMemSessionId] = useState('')
-  const [promptCatalog, setPromptCatalog] = useState([])
+  const [activeSection, setActiveSection] = useState('quickstart')
+
+  const quickStartRef = useRef(null)
+  const rolesRef = useRef(null)
+  const memoryRef = useRef(null)
 
   const resetConnectionState = () => {
     setConnectionState({ kind: 'idle', message: '' })
     setVoiceConnectionState({ kind: 'idle', message: '' })
   }
+
   const setErrorStatus = useCallback((prefix, error) => {
     setStatus(`${prefix}: ${getErrorMessage(error)}`)
+  }, [])
+
+  const jumpToSection = useCallback((sectionKey) => {
+    setActiveSection(sectionKey)
+    const map = {
+      quickstart: quickStartRef.current,
+      roles: rolesRef.current,
+      memory: memoryRef.current,
+    }
+    const node = map[sectionKey]
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
   }, [])
 
   const updateConfigField = (patch) => {
@@ -129,12 +215,11 @@ export default function SettingsView() {
   }
 
   const loadAll = useCallback(async (preferredId = null) => {
-    const [rows, appConfig, userProfile, petUiPrefs, prompts] = await Promise.all([
+    const [rows, appConfig, userProfile, petUiPrefs] = await Promise.all([
       window.electronAPI.listCharacters(),
       window.electronAPI.getAppConfig(),
       window.electronAPI.getProfile(),
       window.electronAPI.getPetUiPrefs(),
-      window.electronAPI.listPromptCatalog().catch(() => []),
     ])
 
     const merged = mergeCharacters(rows)
@@ -147,38 +232,50 @@ export default function SettingsView() {
     const normalizedConfig = buildSettingsConfig(appConfig)
     setConfig(normalizedConfig)
     setSavedConfig(normalizedConfig)
-    setPromptCatalog(Array.isArray(prompts) ? prompts : [])
 
     setApiKeyDirty(false)
     setVoiceAccessKeyDirty(false)
     resetConnectionState()
     setLlmSaveState({ kind: 'idle', message: '' })
     setVoiceSaveState({ kind: 'idle', message: '' })
-    setProfile(userProfile)
-    setSavedProfile(userProfile)
+
+    const normalizedProfile = {
+      name: String(userProfile?.name || ''),
+      occupation: String(userProfile?.occupation || ''),
+      birthday: String(userProfile?.birthday || ''),
+      birthday_year: String(userProfile?.birthday_year || ''),
+      traits: String(userProfile?.traits || ''),
+      notes: String(userProfile?.notes || ''),
+    }
+    setProfile(normalizedProfile)
+    setSavedProfile(normalizedProfile)
     setPetScale(clampPetScale(petUiPrefs?.scale))
 
     const memoryFallback = merged.find((item) => item.isActive) || fallback
     const initSessionId = memoryFallback ? `pet_${memoryFallback.id}` : ''
     setMemSessionId(initSessionId)
-
-    try {
-      const proactive = await window.electronAPI.getProactiveEnabled()
-      setProactiveEnabled(Boolean(proactive))
-    } catch (error) {
-      setProactiveEnabled(false)
-      setStatus(`主动发话配置读取失败，已按关闭处理：${getErrorMessage(error)}`)
-    }
+    setExportRoleId(memoryFallback ? memoryFallback.id : MEMORY_ROLE_ALL)
 
     try {
       if (initSessionId) {
-        const mems = await window.electronAPI.listMemories(initSessionId)
-        setMemories(mems)
+        const response = await window.electronAPI.listMemories({
+          sessionId: initSessionId,
+          limit: RECENT_MEMORY_LIMIT,
+          offset: 0,
+        })
+        const parsed = parseMemoryListResponse(response)
+        setRecentMemories(parsed.items.map((item) => ({
+          ...item,
+          structured: parseStructuredMemory(item?.structured || item?.structuredJson),
+        })))
+        setRecentMemoryTotal(parsed.total)
       } else {
-        setMemories([])
+        setRecentMemories([])
+        setRecentMemoryTotal(0)
       }
     } catch (error) {
-      setMemories([])
+      setRecentMemories([])
+      setRecentMemoryTotal(0)
       setStatus(`记忆列表读取失败：${getErrorMessage(error)}`)
     }
   }, [selectedId])
@@ -215,6 +312,23 @@ export default function SettingsView() {
     const sid = String(memSessionId || '').trim()
     return sid.startsWith('pet_') ? sid.slice(4) : ''
   }, [memSessionId])
+
+  const selectedMemoryRole = useMemo(() => {
+    return memoryRoles.find((item) => item.id === selectedMemoryRoleId) || null
+  }, [memoryRoles, selectedMemoryRoleId])
+
+  const selectedExportRole = useMemo(() => {
+    if (exportRoleId === MEMORY_ROLE_ALL) return null
+    return memoryRoles.find((item) => item.id === exportRoleId) || null
+  }, [memoryRoles, exportRoleId])
+
+  const selectedScopeCount = useMemo(() => {
+    return EXPORT_SCOPE_KEYS.filter((key) => Boolean(exportScopes[key])).length
+  }, [exportScopes])
+
+  const selectedFormatCount = useMemo(() => {
+    return EXPORT_FORMAT_KEYS.filter((key) => Boolean(exportFormats[key])).length
+  }, [exportFormats])
 
   const editorDirty = useMemo(() => {
     return !isDraftEqual(editorDraft, editorOriginal)
@@ -426,8 +540,16 @@ export default function SettingsView() {
   const saveProfile = async () => {
     try {
       const next = await window.electronAPI.setProfile(profile)
-      setProfile(next)
-      setSavedProfile(next)
+      const normalizedProfile = {
+        name: String(next?.name || ''),
+        occupation: String(next?.occupation || ''),
+        birthday: String(next?.birthday || ''),
+        birthday_year: String(next?.birthday_year || ''),
+        traits: String(next?.traits || ''),
+        notes: String(next?.notes || ''),
+      }
+      setProfile(normalizedProfile)
+      setSavedProfile(normalizedProfile)
       setStatus('用户档案已保存')
     } catch (error) {
       setErrorStatus('档案保存失败', error)
@@ -435,15 +557,21 @@ export default function SettingsView() {
   }
 
   const buildExportSuccessMessage = (result) => {
+    const selectedFormats = Array.isArray(result?.selectedFormats) && result.selectedFormats.length > 0
+      ? result.selectedFormats.map((key) => EXPORT_FORMAT_LABELS[key] || key).join('/')
+      : 'Markdown/JSON/JSONL'
+    const selectedScopes = Array.isArray(result?.selectedScopes) && result.selectedScopes.length > 0
+      ? result.selectedScopes.map((key) => EXPORT_SCOPE_LABELS[key] || key).join('、')
+      : '聊天历史、阶段摘要、用户档案'
     if (result?.exportType === 'all_split_by_role') {
-      return `导出完成：按角色分开导出 ${result.items?.length || 0} 份（md/json/jsonl；对话 ${result.chatCount || 0}，摘要 ${result.summaryCount || 0}）`
+      return `导出完成：按角色导出 ${result.items?.length || 0} 份（范围：${selectedScopes}；格式：${selectedFormats}）`
     }
     if (result?.exportType === 'role') {
       const item = Array.isArray(result.items) ? result.items[0] : null
       const roleLabel = String(item?.charName || item?.charId || item?.sessionId || '当前角色')
-      return `导出完成：${roleLabel}（md/json/jsonl；对话 ${result.chatCount || 0}，摘要 ${result.summaryCount || 0}）`
+      return `导出完成：${roleLabel}（范围：${selectedScopes}；格式：${selectedFormats}）`
     }
-    return `导出完成：${result?.baseName || 'muyu-export'}（md/json/jsonl；会话 ${result?.sessionCount || 0}，对话 ${result?.chatCount || 0}，摘要 ${result?.summaryCount || 0}）`
+    return `导出完成：${result?.baseName || 'muyu-export'}（范围：${selectedScopes}；格式：${selectedFormats}）`
   }
 
   const exportDocs = async (payload) => {
@@ -462,44 +590,116 @@ export default function SettingsView() {
     }
   }
 
-  const exportAllMemories = async () => {
-    const splitByRole = window.confirm('导出所有内容：点击“确定”按角色分开导出；点击“取消”合并导出。')
+  const exportByRoleSelection = async () => {
+    if (selectedScopeCount === 0) {
+      setStatus('请至少选择一项导出内容')
+      return
+    }
+    if (selectedFormatCount === 0) {
+      setStatus('请至少选择一种导出格式')
+      return
+    }
+    const basePayload = {
+      includeScopes: {
+        chats: Boolean(exportScopes.chats),
+        summaries: Boolean(exportScopes.summaries),
+        profile: Boolean(exportScopes.profile),
+      },
+      formats: {
+        markdown: Boolean(exportFormats.markdown),
+        json: Boolean(exportFormats.json),
+        jsonl: Boolean(exportFormats.jsonl),
+      },
+    }
+
+    if (!selectedExportRole) {
+      return exportDocs({
+        mode: 'all',
+        ...basePayload,
+      })
+    }
+
     return exportDocs({
-      mode: 'all',
-      allStrategy: splitByRole ? 'split_by_role' : 'merged',
+      mode: 'role',
+      roleSessionId: `pet_${selectedExportRole.id}`,
+      ...basePayload,
     })
   }
 
-  const exportSelectedRoleMemories = async () => {
-    if (!selectedMemoryRoleId) {
-      setStatus('请先在“查看角色记忆”中选择角色，再导出对应角色内容')
-      return
-    }
-    return exportDocs({
-      mode: 'role',
-      roleSessionId: `pet_${selectedMemoryRoleId}`,
+  const toggleExportScope = (key) => {
+    setExportScopes((prev) => {
+      if (key === 'all') {
+        const nextVal = !prev.all
+        return {
+          all: nextVal,
+          chats: nextVal,
+          summaries: nextVal,
+          profile: nextVal,
+        }
+      }
+      const next = { ...prev, [key]: !prev[key] }
+      next.all = EXPORT_SCOPE_KEYS.every((k) => next[k])
+      return next
     })
+  }
+
+  const toggleExportFormat = (key) => {
+    setExportFormats((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }))
   }
 
   const loadMemories = async (sessionId) => {
     const sid = String(sessionId || '').trim()
     if (!sid) {
-      setMemories([])
+      setRecentMemories([])
+      setRecentMemoryTotal(0)
       return
     }
     try {
-      const mems = await window.electronAPI.listMemories(sid)
-      setMemories(mems)
+      const response = await window.electronAPI.listMemories({
+        sessionId: sid,
+        limit: RECENT_MEMORY_LIMIT,
+        offset: 0,
+      })
+      const parsed = parseMemoryListResponse(response)
+      setRecentMemories(parsed.items.map((item) => ({
+        ...item,
+        structured: parseStructuredMemory(item?.structured || item?.structuredJson),
+      })))
+      setRecentMemoryTotal(parsed.total)
     } catch (error) {
       setErrorStatus('读取记忆失败', error)
     }
   }
 
+  const switchMemoryRole = (roleId) => {
+    setExportRoleId(roleId)
+    if (roleId === MEMORY_ROLE_ALL) {
+      setMemSessionId('')
+      setRecentMemories([])
+      setRecentMemoryTotal(0)
+      return
+    }
+    const sid = `pet_${roleId}`
+    setMemSessionId(sid)
+    loadMemories(sid)
+  }
+
+  useEffect(() => {
+    if (exportRoleId === MEMORY_ROLE_ALL) return
+    const exists = memoryRoles.some((item) => item.id === exportRoleId)
+    if (exists) return
+    const fallbackId = memoryRoles[0]?.id || MEMORY_ROLE_ALL
+    switchMemoryRole(fallbackId)
+  }, [exportRoleId, memoryRoles])
+
   const handleDeleteMemory = async (id) => {
     if (!window.confirm('确认删除这条记忆吗？删除后将不再用于对话，且无法恢复。')) return
     try {
       await window.electronAPI.deleteMemory(id)
-      setMemories((prev) => prev.filter((m) => m.id !== id))
+      await loadMemories(memSessionId)
       setStatus('记忆已删除')
     } catch (error) {
       setErrorStatus('删除记忆失败', error)
@@ -521,7 +721,6 @@ export default function SettingsView() {
       }
 
       const payload = buildLlmTestPayload(config, { apiKeyDirty, typedKey })
-
       const result = await window.electronAPI.testLlmConnection(payload)
       const keySource = apiKeyDirty ? '临时 Key' : '已保存 Key'
       setConnectionState({
@@ -559,7 +758,6 @@ export default function SettingsView() {
       }
 
       const payload = buildVoiceTestPayload(config, { voiceAccessKeyDirty, typedToken })
-
       const result = await window.electronAPI.testVoiceConnection(payload)
       const keySource = voiceAccessKeyDirty ? '临时 Token' : '已保存 Token'
       setVoiceConnectionState({
@@ -611,6 +809,9 @@ export default function SettingsView() {
 
   const canShrink = petScale > PET_SCALE_MIN + 0.001
   const canGrow = petScale < PET_SCALE_MAX - 0.001
+  const petScaleUiPosition = useMemo(() => {
+    return clampUiScalePosition(scaleToUiScalePosition(petScale))
+  }, [petScale])
   const asrMode = normalizeAsrMode(config.voiceAsrMode, config.voiceAsrResourceId)
   const isStreamAsr = asrMode === 'stream'
   const activeRoleCount = characters.filter((item) => item.isActive).length
@@ -630,96 +831,66 @@ export default function SettingsView() {
       <header className="settings-topbar">
         <div>
           <h1>设置面板</h1>
-          <p className="settings-subtitle">角色卡片化管理与提示词精细配置</p>
+          <p className="settings-subtitle">基础优先，按任务完成配置与记忆管理</p>
         </div>
         {status && <div className="settings-status">{status}</div>}
       </header>
 
-      <section className="settings-priority-grid">
-        <article className={`priority-card${dirtyCount > 0 ? ' is-warn' : ' is-ready'}`}>
-          <strong>待处理</strong>
-          <p>{dirtyCount > 0 ? `${dirtyCount} 个分区有未保存更改` : '当前没有未保存更改'}</p>
-        </article>
-        <article className={`priority-card${llmReady ? ' is-ready' : ' is-warn'}`}>
-          <strong>AI 连通前提</strong>
-          <p>{llmReady ? 'API Key 已就绪，可直接测试连通' : '请先填写并保存 API Key'}</p>
-        </article>
-        <article className={`priority-card${voiceReady ? ' is-ready' : ' is-warn'}`}>
-          <strong>语音连通前提</strong>
-          <p>{voiceReady ? '语音 Token 已就绪，可测试 ASR / TTS' : '请先填写并保存语音 Token'}</p>
-        </article>
-        <article className="priority-card">
-          <strong>角色状态</strong>
-          <p>已启用 {activeRoleCount} 个角色，当前角色：{currentRole?.name || '-'}</p>
-        </article>
-      </section>
+      <nav className="settings-nav-tabs" aria-label="设置分区导航">
+        <button
+          type="button"
+          className={`settings-nav-tab${activeSection === 'quickstart' ? ' is-active' : ''}`}
+          onClick={() => jumpToSection('quickstart')}
+        >
+          快速开始
+        </button>
+        <button
+          type="button"
+          className={`settings-nav-tab${activeSection === 'roles' ? ' is-active' : ''}`}
+          onClick={() => jumpToSection('roles')}
+        >
+          角色管理
+        </button>
+        <button
+          type="button"
+          className={`settings-nav-tab${activeSection === 'memory' ? ' is-active' : ''}`}
+          onClick={() => jumpToSection('memory')}
+        >
+          记忆中心
+        </button>
+      </nav>
 
       <div className="settings-layout">
-        <section className="settings-panel settings-panel--roles">
+        <section className="settings-panel" ref={quickStartRef}>
           <div className="panel-head">
-            <h2>角色管理</h2>
-            <p>以卡片方式浏览角色与提示词，点击卡片后进入编辑。已启用 {activeRoleCount} 个角色。</p>
-          </div>
-          <RoleCardGrid
-            roles={filteredCharacters}
-            selectedId={selectedId}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onEdit={openEditor}
-          />
-        </section>
-
-        <section className="settings-panel">
-          <div className="panel-head">
-            <h2>桌宠大小</h2>
-            <p>拖动滑杆可连续缩放，键盘也支持 Cmd/Ctrl + +/- 与 Cmd/Ctrl + 0。</p>
+            <h2>快速开始</h2>
+            <p>先完成基础可用项，再进入角色和记忆管理。</p>
           </div>
 
-          <div className="pet-scale-box">
-            <div className="pet-scale-head">
-              <strong>{Math.round(petScale * 100)}%</strong>
-              <span>{PET_SCALE_MIN.toFixed(1)}x - {PET_SCALE_MAX.toFixed(1)}x</span>
-            </div>
+          <section className="settings-priority-grid">
+            <article className={`priority-card${dirtyCount > 0 ? ' is-warn' : ' is-ready'}`}>
+              <strong>待处理</strong>
+              <p>{dirtyCount > 0 ? `${dirtyCount} 个分区有未保存更改` : '当前没有未保存更改'}</p>
+            </article>
+            <article className={`priority-card${llmReady ? ' is-ready' : ' is-warn'}`}>
+              <strong>AI 连通前提</strong>
+              <p>{llmReady ? 'API Key 已就绪，可直接测试连通' : '请先填写并保存 API Key'}</p>
+            </article>
+            <article className={`priority-card${voiceReady ? ' is-ready' : ' is-warn'}`}>
+              <strong>语音连通前提</strong>
+              <p>{voiceReady ? '语音 Token 已就绪，可测试 ASR / TTS' : '请先填写并保存语音 Token'}</p>
+            </article>
+            <article className="priority-card">
+              <strong>角色状态</strong>
+              <p>已启用 {activeRoleCount} 个角色，当前角色：{currentRole?.name || '-'}</p>
+            </article>
+          </section>
 
-            <input
-              className="pet-scale-slider"
-              type="range"
-              min={PET_SCALE_MIN}
-              max={PET_SCALE_MAX}
-              step={PET_SCALE_STEP}
-              value={petScale}
-              onChange={(event) => previewPetScale(event.target.value)}
-              onMouseUp={() => commitPetScale(petScale)}
-              onTouchEnd={() => commitPetScale(petScale)}
-              onBlur={() => commitPetScale(petScale)}
-            />
+          <div className="settings-divider" />
 
-            <div className="button-row">
-              <button
-                className="btn"
-                disabled={!canShrink}
-                title={canShrink ? '缩小 5%' : `已到最小 ${Math.round(PET_SCALE_MIN * 100)}%`}
-                onClick={() => commitPetScale(petScale - 0.05)}
-              >
-                缩小 5%
-              </button>
-              <button className="btn btn--secondary" onClick={resetPetScale}>重置 100%</button>
-              <button
-                className="btn"
-                disabled={!canGrow}
-                title={canGrow ? '放大 5%' : `已到最大 ${Math.round(PET_SCALE_MAX * 100)}%`}
-                onClick={() => commitPetScale(petScale + 0.05)}
-              >
-                放大 5%
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <section className="settings-panel">
           <div className="panel-head">
             <div className="panel-head--row">
-              <h2>AI 配置（常用）</h2>
+              <h2>AI 配置</h2>
               <span className={`panel-dirty${llmDirty ? ' is-dirty' : ''}`}>{llmDirty ? '有未保存更改' : '已保存'}</span>
             </div>
             <p>先填 API URL、模型 ID、API Key，再测试连通并保存。</p>
@@ -730,6 +901,23 @@ export default function SettingsView() {
           <div className="form-grid">
             <label>API URL<input value={config.baseUrl} onChange={(event) => updateConfigField({ baseUrl: event.target.value })} /></label>
             <label>模型 ID<input value={config.model} onChange={(event) => updateConfigField({ model: event.target.value })} /></label>
+            <label>
+              Temperature
+              <input
+                type="number"
+                step="0.1"
+                value={config.temperature}
+                onChange={(event) => updateConfigField({ temperature: event.target.value })}
+              />
+            </label>
+            <label>
+              上下文条数
+              <input
+                type="number"
+                value={config.maxContext}
+                onChange={(event) => updateConfigField({ maxContext: event.target.value })}
+              />
+            </label>
             <label>
               API Key ({config.apiKeyConfigured ? '已配置' : '未配置'})
               <input
@@ -757,6 +945,7 @@ export default function SettingsView() {
             <button className="btn" onClick={testConnection} disabled={testingConnection}>
               {testingConnection ? '测试中...' : '测试连通'}
             </button>
+            <button className="btn btn--danger" onClick={clearApiKey}>清空 API Key</button>
           </div>
           {connectionState.kind !== 'idle' && (
             <span className={`connection-status connection-status--${connectionState.kind}`}>
@@ -767,59 +956,11 @@ export default function SettingsView() {
             <div className={`section-status section-status--${llmSaveState.kind}`}>{llmSaveState.message}</div>
           )}
 
-          <details className="advanced-group" data-testid="settings-llm-advanced">
-            <summary>高级 AI 配置</summary>
-            <p className="section-desc">
-              当前为固定流程：输入安全校验，角色主模型整条生成，输出安全校验；若不通过则整条重生 1 次，仍不通过走固定兜底，再分段流式展示并语音播报。
-            </p>
-            <div className="form-grid">
-              <label>
-                Temperature
-                <input
-                  type="number"
-                  step="0.1"
-                  value={config.temperature}
-                  onChange={(event) => updateConfigField({ temperature: event.target.value })}
-                />
-              </label>
-              <label>
-                上下文条数
-                <input
-                  type="number"
-                  value={config.maxContext}
-                  onChange={(event) => updateConfigField({ maxContext: event.target.value })}
-                />
-              </label>
-            </div>
-            <div className="readonly-prompts">
-              <p className="section-desc">高级提示词当前为只读展示（MVP）：用户仅可编辑角色提示词。</p>
-              {promptCatalog.length === 0 ? (
-                <p className="empty-hint">暂无可展示的高级提示词</p>
-              ) : (
-                <div className="readonly-prompt-list">
-                  {promptCatalog.map((item) => (
-                    <details key={item.id} className="readonly-prompt-item">
-                      <summary>
-                        <span>{item.title}</span>
-                        <span className="readonly-prompt-meta">{item.scope} · 只读</span>
-                      </summary>
-                      <p className="section-desc">{item.description}</p>
-                      <textarea rows={5} value={String(item.content || '')} readOnly />
-                    </details>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="button-row">
-              <button className="btn btn--danger" onClick={clearApiKey}>清空 API Key</button>
-            </div>
-          </details>
-        </section>
+          <div className="settings-divider" />
 
-        <section className="settings-panel">
           <div className="panel-head">
             <div className="panel-head--row">
-              <h2>语音配置（常用）</h2>
+              <h2>语音配置</h2>
               <span className={`panel-dirty${voiceDirty ? ' is-dirty' : ''}`}>{voiceDirty ? '有未保存更改' : '已保存'}</span>
             </div>
             <p>点按开始录音、再点结束。语音播放开关可在聊天窗口右上角控制。</p>
@@ -850,7 +991,7 @@ export default function SettingsView() {
               </select>
             </label>
             <label>
-              ASR 资源 ID（{isStreamAsr ? `默认流式：${DEFAULT_ASR_STREAM_RESOURCE_ID}` : `默认文件：${DEFAULT_ASR_FILE_RESOURCE_ID}`}）
+              ASR 资源 ID（{isStreamAsr ? `默认流式：${DEFAULT_ASR_STREAM_RESOURCE_ID}` : `默认文件：${DEFAULT_ASR_FILE_RESOURCE_ID}`})
               <input
                 value={config.voiceAsrResourceId}
                 onChange={(event) => updateConfigField({
@@ -859,6 +1000,47 @@ export default function SettingsView() {
               />
             </label>
             <label>TTS 资源 ID<input value={config.voiceTtsResourceId} onChange={(event) => updateConfigField({ voiceTtsResourceId: event.target.value })} /></label>
+            {isStreamAsr ? (
+              <label>
+                ASR WebSocket URL
+                <input
+                  value={config.voiceAsrStreamUrl}
+                  onChange={(event) => updateConfigField({ voiceAsrStreamUrl: event.target.value })}
+                  placeholder={DEFAULT_ASR_STREAM_URL}
+                />
+              </label>
+            ) : (
+              <label>
+                ASR 上传接口（可选）
+                <input
+                  value={config.voiceAsrUploadEndpoint}
+                  onChange={(event) => updateConfigField({ voiceAsrUploadEndpoint: event.target.value })}
+                  placeholder="https://your-uploader.example/upload"
+                />
+              </label>
+            )}
+            <label>
+              TTS 格式
+              <select
+                value={config.voiceTtsFormat}
+                onChange={(event) => updateConfigField({ voiceTtsFormat: event.target.value })}
+              >
+                <option value="mp3">mp3</option>
+                <option value="wav">wav</option>
+                <option value="ogg">ogg</option>
+                <option value="pcm">pcm</option>
+              </select>
+            </label>
+            <label>
+              TTS 采样率
+              <input
+                type="number"
+                min={8000}
+                step={1000}
+                value={config.voiceTtsSampleRate}
+                onChange={(event) => updateConfigField({ voiceTtsSampleRate: event.target.value })}
+              />
+            </label>
             <label>
               语音 Access Token ({config.voiceAccessKeyConfigured ? '已配置' : '未配置'})
               <input
@@ -886,6 +1068,7 @@ export default function SettingsView() {
             <button className="btn" onClick={testVoiceConnection} disabled={testingVoiceConnection}>
               {testingVoiceConnection ? '测试中...' : '测试语音连通'}
             </button>
+            <button className="btn btn--danger" onClick={clearVoiceAccessKey}>清空语音 Token</button>
           </div>
           {voiceConnectionState.kind !== 'idle' && (
             <span className={`connection-status connection-status--${voiceConnectionState.kind}`}>
@@ -896,71 +1079,89 @@ export default function SettingsView() {
             <div className={`section-status section-status--${voiceSaveState.kind}`}>{voiceSaveState.message}</div>
           )}
 
-          <details className="advanced-group" data-testid="settings-voice-advanced">
-            <summary>高级语音配置</summary>
-            <div className="form-grid">
-              {isStreamAsr ? (
-                <label>
-                  ASR WebSocket URL
-                  <input
-                    value={config.voiceAsrStreamUrl}
-                    onChange={(event) => updateConfigField({ voiceAsrStreamUrl: event.target.value })}
-                    placeholder={DEFAULT_ASR_STREAM_URL}
-                  />
-                </label>
-              ) : (
-                <label>
-                  ASR 上传接口（可选）
-                  <input
-                    value={config.voiceAsrUploadEndpoint}
-                    onChange={(event) => updateConfigField({ voiceAsrUploadEndpoint: event.target.value })}
-                    placeholder="https://your-uploader.example/upload"
-                  />
-                </label>
-              )}
-              <label>
-                TTS 格式
-                <select
-                  value={config.voiceTtsFormat}
-                  onChange={(event) => updateConfigField({ voiceTtsFormat: event.target.value })}
-                >
-                  <option value="mp3">mp3</option>
-                  <option value="wav">wav</option>
-                  <option value="ogg">ogg</option>
-                  <option value="pcm">pcm</option>
-                </select>
-              </label>
-              <label>
-                TTS 采样率
-                <input
-                  type="number"
-                  min={8000}
-                  step={1000}
-                  value={config.voiceTtsSampleRate}
-                  onChange={(event) => updateConfigField({ voiceTtsSampleRate: event.target.value })}
-                />
-              </label>
+          <div className="settings-divider" />
+
+          <div className="panel-head">
+            <h2>桌宠大小</h2>
+            <p>拖动滑杆可连续缩放，键盘也支持 Cmd/Ctrl + +/- 与 Cmd/Ctrl + 0。</p>
+          </div>
+
+          <div className="pet-scale-box">
+            <div className="pet-scale-head">
+              <strong>{Math.round(petScale * 100)}%</strong>
+              <span>{PET_SCALE_MIN.toFixed(1)}x - {PET_SCALE_MAX.toFixed(1)}x</span>
             </div>
+
+            <input
+              className="pet-scale-slider"
+              type="range"
+              min={0}
+              max={100}
+              step={0.1}
+              value={petScaleUiPosition}
+              onChange={(event) => previewPetScale(uiScalePositionToScale(event.target.value))}
+              onMouseUp={(event) => commitPetScale(uiScalePositionToScale(event.currentTarget.value))}
+              onTouchEnd={(event) => commitPetScale(uiScalePositionToScale(event.currentTarget.value))}
+              onBlur={(event) => commitPetScale(uiScalePositionToScale(event.currentTarget.value))}
+            />
+            <div className="pet-scale-marks" aria-hidden="true">
+              <span>60%</span>
+              <span className="is-center">100%</span>
+              <span>180%</span>
+            </div>
+
             <div className="button-row">
-              <button className="btn btn--danger" onClick={clearVoiceAccessKey}>清空语音 Token</button>
+              <button
+                className="btn"
+                disabled={!canShrink}
+                title={canShrink ? '缩小 5%' : `已到最小 ${Math.round(PET_SCALE_MIN * 100)}%`}
+                onClick={() => commitPetScale(petScale - 0.05)}
+              >
+                缩小 5%
+              </button>
+              <button className="btn btn--secondary" onClick={resetPetScale}>重置 100%</button>
+              <button
+                className="btn"
+                disabled={!canGrow}
+                title={canGrow ? '放大 5%' : `已到最大 ${Math.round(PET_SCALE_MAX * 100)}%`}
+                onClick={() => commitPetScale(petScale + 0.05)}
+              >
+                放大 5%
+              </button>
             </div>
-          </details>
+          </div>
         </section>
 
-        <section className="settings-panel">
+        <section className="settings-panel settings-panel--roles" ref={rolesRef}>
           <div className="panel-head">
-            <h2>记忆</h2>
-            <p>记忆会自动沉淀。你可以在这里维护用户档案、导出记忆、查看角色记忆。</p>
+            <h2>角色管理</h2>
+            <p>以卡片方式浏览角色与提示词，点击卡片后进入编辑。已启用 {activeRoleCount} 个角色。</p>
+          </div>
+          <RoleCardGrid
+            roles={filteredCharacters}
+            selectedId={selectedId}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onEdit={openEditor}
+          />
+        </section>
+
+        <section className="settings-panel" ref={memoryRef}>
+          <div className="panel-head">
+            <h2>记忆中心</h2>
+            <p>长期记忆是用户档案；阶段记忆摘要（中期）是会话沉淀结果。</p>
           </div>
 
           <div className="memory-subsection">
             <div className="panel-head--row">
-              <h3>用户档案</h3>
+              <h3>长期记忆（用户档案）</h3>
               <span className={`panel-dirty${profileDirty ? ' is-dirty' : ''}`}>{profileDirty ? '有未保存更改' : '已保存'}</span>
             </div>
             <div className="form-grid">
               <label>姓名<input value={profile.name || ''} onChange={(event) => setProfile((prev) => ({ ...prev, name: event.target.value }))} /></label>
               <label>职业<input value={profile.occupation || ''} onChange={(event) => setProfile((prev) => ({ ...prev, occupation: event.target.value }))} /></label>
+              <label>生日（MM-DD）<input value={profile.birthday || ''} onChange={(event) => setProfile((prev) => ({ ...prev, birthday: event.target.value }))} /></label>
+              <label>出生年份<input value={profile.birthday_year || ''} onChange={(event) => setProfile((prev) => ({ ...prev, birthday_year: event.target.value }))} /></label>
               <label>个性标签<input value={profile.traits || ''} onChange={(event) => setProfile((prev) => ({ ...prev, traits: event.target.value }))} /></label>
             </div>
             <label>
@@ -970,74 +1171,139 @@ export default function SettingsView() {
             <div className="button-row">
               <button className="btn btn--primary" onClick={saveProfile} disabled={!profileDirty}>保存档案</button>
             </div>
-            <label className="switch-row">
-              <span>主动发话</span>
-              <input
-                type="checkbox"
-                checked={proactiveEnabled}
-                onChange={async (e) => {
-                  const next = e.target.checked
-                  try {
-                    await window.electronAPI.setProactiveEnabled(next)
-                    setProactiveEnabled(next)
-                  } catch (error) {
-                    setErrorStatus('主动发话设置失败', error)
-                  }
-                }}
-              />
-              <span className="field-hint">开启后宠物会在你缺席或生日时主动问候</span>
-            </label>
+            <p className="field-hint">主动发话默认开启：宠物会在你缺席或生日时主动问候。</p>
           </div>
 
           <div className="memory-subsection">
-            <h3>导出记忆</h3>
-            <p className="section-desc">
-              支持导出所有内容或导出当前选中角色。每份导出包含 Markdown 与 JSON（同时保留 JSONL 兼容文件）。
-              导出中的“长期记忆”指用户档案，“阶段记忆摘要（中期）”来自会话摘要。
-            </p>
-            <div className="button-row">
-              <button className="btn" onClick={exportAllMemories} disabled={exportingDocs}>
-                {exportingDocs ? '导出中...' : '导出所有内容'}
+            <h3>导出与查看</h3>
+            <div className="memory-simple-controls">
+              <button
+                className="btn"
+                type="button"
+                data-testid="memory-export-toggle"
+                onClick={() => setExportOptionsExpanded((prev) => !prev)}
+              >
+                {exportOptionsExpanded ? '收起选项' : '展开选择'}
               </button>
-              <button className="btn" onClick={exportSelectedRoleMemories} disabled={exportingDocs || !selectedMemoryRoleId}>
-                {exportingDocs ? '导出中...' : '导出当前选中角色'}
+              <select
+                id="memory-role-select"
+                data-testid="memory-role-select"
+                value={exportRoleId}
+                onChange={(event) => switchMemoryRole(event.target.value)}
+                disabled={memoryRoles.length === 0}
+              >
+                <option value={MEMORY_ROLE_ALL}>全部</option>
+                {memoryRoles.map((role) => (
+                  <option key={role.id} value={role.id}>{role.name}</option>
+                ))}
+              </select>
+              <button
+                className="btn btn--primary"
+                data-testid="memory-export-run"
+                onClick={exportByRoleSelection}
+                disabled={exportingDocs || selectedScopeCount === 0 || selectedFormatCount === 0}
+              >
+                {exportingDocs ? '导出中...' : '导出'}
               </button>
             </div>
-            <p className="field-hint">按角色分开导出时不包含默认会话。</p>
+            <p className="field-hint" data-testid="memory-export-target">
+              当前导出对象：{selectedExportRole ? selectedExportRole.name : '全部角色'}
+            </p>
+            <p className="field-hint">默认仅展示基础操作，展开后可配置导出范围与格式。</p>
+            {exportOptionsExpanded && (
+              <div className="memory-option-block">
+                <div className="memory-option-group" data-testid="memory-export-scope-group">
+                  <strong>导出内容</strong>
+                  <label className="memory-option-item" data-testid="memory-scope-all">
+                    <input type="checkbox" checked={exportScopes.all} onChange={() => toggleExportScope('all')} />
+                    全部
+                  </label>
+                  <label className="memory-option-item" data-testid="memory-scope-chats">
+                    <input type="checkbox" checked={exportScopes.chats} onChange={() => toggleExportScope('chats')} />
+                    聊天历史
+                  </label>
+                  <label className="memory-option-item" data-testid="memory-scope-summaries">
+                    <input type="checkbox" checked={exportScopes.summaries} onChange={() => toggleExportScope('summaries')} />
+                    阶段摘要
+                  </label>
+                  <label className="memory-option-item" data-testid="memory-scope-profile">
+                    <input type="checkbox" checked={exportScopes.profile} onChange={() => toggleExportScope('profile')} />
+                    用户档案
+                  </label>
+                </div>
+                <div className="memory-option-group" data-testid="memory-export-format-group">
+                  <strong>导出格式</strong>
+                  <label className="memory-option-item" data-testid="memory-format-markdown">
+                    <input
+                      type="checkbox"
+                      checked={exportFormats.markdown}
+                      onChange={() => toggleExportFormat('markdown')}
+                    />
+                    Markdown
+                  </label>
+                  <label className="memory-option-item" data-testid="memory-format-json">
+                    <input
+                      type="checkbox"
+                      checked={exportFormats.json}
+                      onChange={() => toggleExportFormat('json')}
+                    />
+                    JSON
+                  </label>
+                  <label className="memory-option-item" data-testid="memory-format-jsonl">
+                    <input
+                      type="checkbox"
+                      checked={exportFormats.jsonl}
+                      onChange={() => toggleExportFormat('jsonl')}
+                    />
+                    JSONL
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="memory-subsection">
-            <h3>查看角色记忆</h3>
-            {memoryRoles.length === 0 ? (
-              <p className="empty-hint">暂无可查看的启用角色</p>
-            ) : (
-              <div className="memory-role-tabs">
-                {memoryRoles.map((role) => (
-                  <button
-                    key={role.id}
-                    className={`memory-role-tab${selectedMemoryRoleId === role.id ? ' is-active' : ''}`}
-                    onClick={() => {
-                      const sid = `pet_${role.id}`
-                      setMemSessionId(sid)
-                      loadMemories(sid)
-                    }}
-                  >
-                    {role.name}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="panel-head--row">
+              <h3>阶段记忆摘要（中期）预览</h3>
+              <button
+                className="btn"
+                onClick={() => window.electronAPI.openMemoryWindow({
+                  sessionId: selectedExportRole ? `pet_${selectedExportRole.id}` : '',
+                })}
+              >
+                查看全部
+              </button>
+            </div>
+            <p className="field-hint">这里只展示最近 {RECENT_MEMORY_LIMIT} 条，完整记录请点右上角“查看全部”。</p>
 
-            {memories.length === 0 ? (
+            {exportRoleId === MEMORY_ROLE_ALL ? (
+              <p className="empty-hint">当前为“全部”视图，预览仅支持单角色。请在上方下拉选择具体角色。</p>
+            ) : !selectedMemoryRole ? (
+              <p className="empty-hint">暂无可查看的启用角色</p>
+            ) : recentMemories.length === 0 ? (
               <p className="empty-hint">暂无记忆记录</p>
             ) : (
               <div className="memory-list">
-                {memories.map((m) => (
+                {recentMemories.map((m) => (
                   <div key={m.id} className="memory-item">
                     <span className="memory-ts">
-                      {new Date(m.ts).toLocaleDateString('zh-CN')}
+                      {new Date(m.ts).toLocaleString('zh-CN')}
                     </span>
                     <p className="memory-text">{m.summary}</p>
+                    {m.structured && (
+                      <div className="memory-structured">
+                        {MEMORY_STRUCTURED_KEYS.map((key) => {
+                          const list = Array.isArray(m.structured?.[key]) ? m.structured[key].filter(Boolean) : []
+                          if (list.length === 0) return null
+                          return (
+                            <div key={key} className="memory-structured-row">
+                              <strong>{key}</strong>
+                              <span>{list.join(' / ')}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                     <button
                       className="btn btn--danger btn--sm"
                       onClick={() => handleDeleteMemory(m.id)}
@@ -1048,8 +1314,12 @@ export default function SettingsView() {
                 ))}
               </div>
             )}
+            <div className="memory-recent-footer">
+              <span className="field-hint">当前仅展示最近 {RECENT_MEMORY_LIMIT} 条（共 {recentMemoryTotal} 条）</span>
+            </div>
           </div>
         </section>
+
       </div>
 
       <RoleEditorModal

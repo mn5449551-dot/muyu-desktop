@@ -3,6 +3,12 @@ const log = require('../logger')
 const FALLBACK_SESSION_ID = 'pet_baihu'
 const INPUT_TOKEN_LIMIT = 6000
 const PROFILE_EXTRACTION_INTERVAL = 3
+const SUMMARY_STRUCTURED_KEYS = ['facts', 'preferences', 'goals', 'constraints', 'todos', 'risks', 'key_moments', 'open_threads']
+const SUMMARY_NOISE_PATTERNS = [
+  /\[object object\]/i,
+  /无意义内容|重复发1|多次询问.*身份|乱发字符|零散内容/i,
+  /\/clear/i,
+]
 
 function estimateTokens(text) {
   return Math.ceil(String(text || '').length / 2)
@@ -22,15 +28,22 @@ function normalizeText(value) {
   return String(value || '').trim()
 }
 
-function isBlank(value) {
-  return normalizeText(value) === ''
+function normalizeStructuredList(value) {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => normalizeText(item)).filter(Boolean)
 }
 
-function resolveRelationshipStage(summaryCount) {
-  if (summaryCount >= 20) return 'close'
-  if (summaryCount >= 5) return 'familiar'
-  return 'new'
+function hasNoiseSignal(text) {
+  const source = String(text || '').trim()
+  if (!source) return true
+  return SUMMARY_NOISE_PATTERNS.some((pattern) => pattern.test(source))
 }
+
+function hasAnyStructuredInfo(structured) {
+  if (!structured || typeof structured !== 'object') return false
+  return SUMMARY_STRUCTURED_KEYS.some((key) => normalizeStructuredList(structured[key]).length > 0)
+}
+
 
 class MemoryService {
   constructor(db, llmService) {
@@ -54,6 +67,20 @@ class MemoryService {
     return unsummarizedCount >= effectiveThreshold
   }
 
+  _skipLowQualitySlice(sessionId, inputSlice = [], reason = 'quality-gated') {
+    if (!Array.isArray(inputSlice) || inputSlice.length === 0) return
+    const fromMsgId = Number(inputSlice[0]?.id || 0)
+    const toMsgId = Number(inputSlice[inputSlice.length - 1]?.id || 0)
+    if (fromMsgId <= 0 || toMsgId <= 0) return
+    const sid = normalizeSessionId(sessionId, this._getDefaultSessionId())
+    const markerId = this.db.addMemorySummary(`[SKIP:${reason}]`, fromMsgId, toMsgId, sid, {
+      structured: null,
+    })
+    if (markerId > 0) {
+      this.db.softDeleteSummary(markerId)
+    }
+  }
+
   async runSummaryIfNeeded({
     sessionId = '',
     threshold = 20,
@@ -75,31 +102,41 @@ class MemoryService {
     return next
   }
 
-  async _extractAndMergeProfile(conversationText) {
+  async _extractAndMergeProfile(conversationText, sessionId = '') {
     const extracted = await this.llmService.generateProfileExtraction(conversationText)
     if (!extracted || typeof extracted !== 'object') return
 
     const existing = this.db.getUserProfile()
     const toSave = {}
+    const conflicts = []
 
-    const name = normalizeText(extracted.name)
-    if (name && isBlank(existing.name)) {
-      toSave.name = name
+    const upsertProfileField = (fieldKey, nextValue) => {
+      const normalized = normalizeText(nextValue)
+      if (!normalized) return
+
+      const oldValue = existing[fieldKey]
+      const normalizedOldValue = normalizeText(oldValue)
+      if (!normalizedOldValue) {
+        toSave[fieldKey] = normalized
+        return
+      }
+
+      if (normalized !== normalizedOldValue) {
+        conflicts.push({ fieldKey, oldValue, newValue: normalized })
+      }
     }
 
-    const occupation = normalizeText(extracted.occupation)
-    if (occupation && isBlank(existing.occupation)) {
-      toSave.occupation = occupation
-    }
+    upsertProfileField('name', extracted.name)
+    upsertProfileField('occupation', extracted.occupation)
 
     const birthday = normalizeText(extracted.birthday)
-    if (/^\d{2}-\d{2}$/.test(birthday) && isBlank(existing.birthday)) {
-      toSave.birthday = birthday
+    if (/^\d{2}-\d{2}$/.test(birthday)) {
+      upsertProfileField('birthday', birthday)
     }
 
     const birthdayYear = parseSafeInt(extracted.birthday_year, 0)
-    if (birthdayYear > 0 && isBlank(existing.birthday_year)) {
-      toSave.birthday_year = String(birthdayYear)
+    if (birthdayYear > 0) {
+      upsertProfileField('birthday_year', String(birthdayYear))
     }
 
     if (Array.isArray(extracted.traits) && extracted.traits.length > 0) {
@@ -125,17 +162,37 @@ class MemoryService {
     Object.entries(toSave).forEach(([key, value]) => {
       this.db.setUserProfileField(key, String(value || ''))
     })
+
+    if (typeof this.db.recordProfileFieldConflict === 'function' && conflicts.length > 0) {
+      const sid = normalizeSessionId(sessionId, this._getDefaultSessionId())
+      conflicts.forEach((item) => {
+        this.db.recordProfileFieldConflict({
+          fieldKey: item.fieldKey,
+          oldValue: item.oldValue,
+          newValue: item.newValue,
+          sessionId: sid,
+          createdAt: Date.now(),
+        })
+      })
+    }
   }
 
   async _doRunSummary({ sessionId, threshold, maxMessages, isQuitting, force }) {
     const unsummarized = this.db.getUnsummarizedMessages(sessionId)
+    const pendingCount = unsummarized.length
+
+    const rejectLowQuality = (markerReason, reason) => {
+      this._skipLowQualitySlice(sessionId, inputSlice, markerReason)
+      return { created: false, reason, pending: pendingCount }
+    }
+
     if (!this._shouldTrigger({
-      unsummarizedCount: unsummarized.length,
+      unsummarizedCount: pendingCount,
       threshold,
       isQuitting,
       force,
     })) {
-      return { created: false, reason: 'threshold-not-met', pending: unsummarized.length }
+      return { created: false, reason: 'threshold-not-met', pending: pendingCount }
     }
 
     let inputSlice = unsummarized.slice(0, maxMessages)
@@ -146,8 +203,10 @@ class MemoryService {
     }
 
     if (inputSlice.length === 0) {
-      return { created: false, reason: 'summary-empty', pending: unsummarized.length }
+      return { created: false, reason: 'summary-empty', pending: pendingCount }
     }
+    const fromMsgId = inputSlice[0].id
+    const toMsgId = inputSlice[inputSlice.length - 1].id
 
     let summaryResult
     try {
@@ -164,11 +223,17 @@ class MemoryService {
       : null
 
     if (!summaryText) {
-      return { created: false, reason: 'summary-empty', pending: unsummarized.length }
+      return rejectLowQuality('summary-empty', 'summary-empty')
     }
-
-    const fromMsgId = inputSlice[0].id
-    const toMsgId = inputSlice[inputSlice.length - 1].id
+    if (!summaryStructured || typeof summaryStructured !== 'object') {
+      return rejectLowQuality('no-structured', 'quality-gated-no-structured')
+    }
+    if (hasNoiseSignal(inputText) || hasNoiseSignal(summaryText)) {
+      return rejectLowQuality('noisy', 'quality-gated-noisy')
+    }
+    if (!hasAnyStructuredInfo(summaryStructured)) {
+      return rejectLowQuality('empty-structured', 'quality-gated-empty-structured')
+    }
     this.db.addMemorySummary(summaryText, fromMsgId, toMsgId, sessionId, {
       structured: summaryStructured,
     })
@@ -182,16 +247,11 @@ class MemoryService {
       createdAt: Date.now(),
     })
 
-    const memory = this.db.getCharacterMemory(sessionId)
-    const nextCount = (Number(memory.summaryCount) || 0) + 1
-    const nextStage = resolveRelationshipStage(nextCount)
-    this.db.upsertCharacterMemory(sessionId, {
-      relationshipStage: nextStage,
-      summaryCount: nextCount,
-    })
-
-    if (nextCount % PROFILE_EXTRACTION_INTERVAL === 0) {
-      this._extractAndMergeProfile(inputText).catch((error) => {
+    const summaryCount = typeof this.db.getSummaryHistoryCount === 'function'
+      ? this.db.getSummaryHistoryCount(sessionId)
+      : 0
+    if (summaryCount > 0 && summaryCount % PROFILE_EXTRACTION_INTERVAL === 0) {
+      this._extractAndMergeProfile(inputText, sessionId).catch((error) => {
         log.warn('[profile-extract]', error?.message || String(error))
       })
     }

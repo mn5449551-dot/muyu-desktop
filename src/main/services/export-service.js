@@ -2,6 +2,9 @@ const fs = require('fs')
 const path = require('path')
 const log = require('../logger')
 
+const EXPORT_SCOPE_KEYS = ['chats', 'summaries', 'profile']
+const EXPORT_FORMAT_KEYS = ['markdown', 'json', 'jsonl']
+
 function pad2(value) {
   return String(value).padStart(2, '0')
 }
@@ -65,6 +68,48 @@ class ExportService {
     this.db = db
   }
 
+  normalizeIncludeScopes(includeScopes) {
+    const hasInput = includeScopes && typeof includeScopes === 'object'
+    if (!hasInput) {
+      return {
+        chats: true,
+        summaries: true,
+        profile: true,
+        selectedScopes: EXPORT_SCOPE_KEYS.slice(),
+      }
+    }
+
+    const all = Boolean(includeScopes.all)
+    const normalized = {
+      chats: all || Boolean(includeScopes.chats),
+      summaries: all || Boolean(includeScopes.summaries),
+      profile: all || Boolean(includeScopes.profile),
+    }
+    const selectedScopes = EXPORT_SCOPE_KEYS.filter((key) => normalized[key])
+
+    return { ...normalized, selectedScopes }
+  }
+
+  normalizeFormats(formats) {
+    const hasInput = formats && typeof formats === 'object'
+    if (!hasInput) {
+      return {
+        markdown: true,
+        json: true,
+        jsonl: true,
+        selectedFormats: EXPORT_FORMAT_KEYS.slice(),
+      }
+    }
+
+    const normalized = {
+      markdown: Boolean(formats.markdown),
+      json: Boolean(formats.json),
+      jsonl: Boolean(formats.jsonl),
+    }
+    const selectedFormats = EXPORT_FORMAT_KEYS.filter((key) => normalized[key])
+    return { ...normalized, selectedFormats }
+  }
+
   normalizeSessionIds(sessionIds = []) {
     return Array.from(new Set(
       (Array.isArray(sessionIds) ? sessionIds : [])
@@ -83,31 +128,36 @@ class ExportService {
     return grouped
   }
 
-  buildMarkdown({ sessionIds, chats, summaries, profile, charNameById, generatedAt }) {
+  buildMarkdown({ sessionIds, chats, summaries, profile, charNameById, generatedAt, includeScopes }) {
     const lines = []
     lines.push('# 木鱼桌宠数据导出')
     lines.push('')
     lines.push(`- 导出时间: ${toLocal(generatedAt)} (${toIso(generatedAt)})`)
     lines.push(`- 会话数量: ${sessionIds.length}`)
-    lines.push(`- 对话条数: ${chats.length}`)
-    lines.push(`- 阶段记忆摘要（中期）条数: ${summaries.length}`)
+    if (includeScopes.chats) lines.push(`- 对话条数: ${chats.length}`)
+    if (includeScopes.summaries) lines.push(`- 阶段记忆摘要（中期）条数: ${summaries.length}`)
     lines.push('')
 
-    lines.push('## 用户档案快照')
-    lines.push('- 说明：本区即“长期记忆”，来源于 user_profile 稳定字段。')
-    const profileEntries = Object.entries(profile || {}).filter(([, value]) => String(value || '').trim())
-    if (profileEntries.length === 0) {
-      lines.push('- （空）')
-    } else {
-      profileEntries.forEach(([key, value]) => {
-        lines.push(`- ${key}: ${String(value || '').trim()}`)
-      })
+    if (includeScopes.profile) {
+      lines.push('## 用户档案快照')
+      lines.push('- 说明：本区即“长期记忆”，来源于 user_profile 稳定字段。')
+      const profileEntries = Object.entries(profile || {}).filter(([, value]) => String(value || '').trim())
+      if (profileEntries.length === 0) {
+        lines.push('- （空）')
+      } else {
+        profileEntries.forEach(([key, value]) => {
+          lines.push(`- ${key}: ${String(value || '').trim()}`)
+        })
+      }
+      lines.push('')
     }
-    lines.push('')
+
+    if (!includeScopes.chats && !includeScopes.summaries) {
+      return lines.join('\n')
+    }
 
     const chatBySession = this.groupBySession(chats)
     const summaryBySession = this.groupBySession(summaries)
-
     if (sessionIds.length === 0) {
       lines.push('## 会话')
       lines.push('- （无会话数据）')
@@ -124,145 +174,181 @@ class ExportService {
       }
       lines.push('')
 
-      const sessionChats = chatBySession.get(sid) || []
-      lines.push('### 对话记录')
-      if (sessionChats.length === 0) {
-        lines.push('- （空）')
-      } else {
-        sessionChats.forEach((item) => {
-          lines.push(`- [${toLocal(item.ts)}] ${item.role}: ${item.content}`)
-        })
+      if (includeScopes.chats) {
+        const sessionChats = chatBySession.get(sid) || []
+        lines.push('### 对话记录')
+        if (sessionChats.length === 0) {
+          lines.push('- （空）')
+        } else {
+          sessionChats.forEach((item) => {
+            lines.push(`- [${toLocal(item.ts)}] ${item.role}: ${item.content}`)
+          })
+        }
+        lines.push('')
       }
-      lines.push('')
 
-      const sessionSummaries = summaryBySession.get(sid) || []
-      lines.push('### 阶段记忆摘要（中期）')
-      lines.push('- 说明：该区为对话阶段性沉淀，不等同于长期档案。')
-      if (sessionSummaries.length === 0) {
-        lines.push('- （空）')
-      } else {
-        sessionSummaries.forEach((item, idx) => {
-          lines.push(`${idx + 1}. [${toLocal(item.ts)}] ${item.summary}`)
-        })
+      if (includeScopes.summaries) {
+        const sessionSummaries = summaryBySession.get(sid) || []
+        lines.push('### 阶段记忆摘要（中期）')
+        lines.push('- 说明：该区为对话阶段性沉淀，不等同于长期档案。')
+        if (sessionSummaries.length === 0) {
+          lines.push('- （空）')
+        } else {
+          sessionSummaries.forEach((item, idx) => {
+            lines.push(`${idx + 1}. [${toLocal(item.ts)}] ${item.summary}`)
+          })
+        }
+        lines.push('')
       }
-      lines.push('')
     })
 
     return lines.join('\n')
   }
 
-  buildJsonl({ sessionIds, chats, summaries, profile, charNameById, generatedAt }) {
+  buildJsonl({ sessionIds, chats, summaries, profile, charNameById, generatedAt, includeScopes }) {
     const rows = []
 
-    rows.push({
-      type: 'profile_snapshot',
-      session_id: '__global__',
-      role: '',
-      content: JSON.stringify(profile || {}),
-      ts: generatedAt,
-      iso_time: toIso(generatedAt),
-      char_id: '',
-      char_name: '',
-    })
+    if (includeScopes.profile) {
+      rows.push({
+        type: 'profile_snapshot',
+        session_id: '__global__',
+        role: '',
+        content: JSON.stringify(profile || {}),
+        ts: generatedAt,
+        iso_time: toIso(generatedAt),
+        char_id: '',
+        char_name: '',
+      })
+    }
 
     const allowedSessions = new Set(sessionIds)
 
-    chats.forEach((item) => {
-      const { sid, charId, charName } = getSessionMeta(item.sessionId, charNameById)
-      if (!allowedSessions.has(sid)) return
-      rows.push({
-        type: 'chat',
-        session_id: sid,
-        role: item.role,
-        content: item.content,
-        ts: item.ts,
-        iso_time: toIso(item.ts),
-        char_id: charId,
-        char_name: charName,
+    if (includeScopes.chats) {
+      chats.forEach((item) => {
+        const { sid, charId, charName } = getSessionMeta(item.sessionId, charNameById)
+        if (!allowedSessions.has(sid)) return
+        rows.push({
+          type: 'chat',
+          session_id: sid,
+          role: item.role,
+          content: item.content,
+          ts: item.ts,
+          iso_time: toIso(item.ts),
+          char_id: charId,
+          char_name: charName,
+        })
       })
-    })
+    }
 
-    summaries.forEach((item) => {
-      const { sid, charId, charName } = getSessionMeta(item.sessionId, charNameById)
-      if (!allowedSessions.has(sid)) return
-      const structured = parseJsonObject(item.structuredJson)
-      rows.push({
-        type: 'summary',
-        session_id: sid,
-        role: 'system',
-        content: item.summary,
-        structured,
-        ts: item.ts,
-        iso_time: toIso(item.ts),
-        char_id: charId,
-        char_name: charName,
+    if (includeScopes.summaries) {
+      summaries.forEach((item) => {
+        const { sid, charId, charName } = getSessionMeta(item.sessionId, charNameById)
+        if (!allowedSessions.has(sid)) return
+        const structured = parseJsonObject(item.structuredJson)
+        rows.push({
+          type: 'summary',
+          session_id: sid,
+          role: 'system',
+          content: item.summary,
+          structured,
+          ts: item.ts,
+          iso_time: toIso(item.ts),
+          char_id: charId,
+          char_name: charName,
+        })
       })
-    })
+    }
 
+    if (rows.length === 0) return ''
     return rows.map((row) => JSON.stringify(row)).join('\n') + '\n'
   }
 
-  buildJson({ sessionIds, chats, summaries, profile, charNameById, generatedAt }) {
+  buildJson({ sessionIds, chats, summaries, profile, charNameById, generatedAt, includeScopes }) {
     const chatBySession = this.groupBySession(chats)
     const summaryBySession = this.groupBySession(summaries)
 
-    const sessions = sessionIds.map((sessionId) => {
-      const { sid, charId, charName } = getSessionMeta(sessionId, charNameById)
-      const sessionChats = (chatBySession.get(sid) || []).map((item) => ({
-        id: item.id,
-        role: item.role,
-        content: item.content,
-        ts: item.ts,
-        iso_time: toIso(item.ts),
-      }))
-      const sessionSummaries = (summaryBySession.get(sid) || []).map((item) => ({
-        id: item.id,
-        summary_text: item.summary,
-        structured: parseJsonObject(item.structuredJson),
-        from_msg_id: item.fromMsgId,
-        to_msg_id: item.toMsgId,
-        ts: item.ts,
-        iso_time: toIso(item.ts),
-      }))
-      return {
-        session_id: sid,
-        char_id: charId,
-        char_name: charName,
-        chats: sessionChats,
-        summaries: sessionSummaries,
-      }
-    })
-
-    return {
+    const result = {
       meta: {
         generated_at: generatedAt,
         generated_at_iso: toIso(generatedAt),
         session_count: sessionIds.length,
-        chat_count: chats.length,
-        summary_count: summaries.length,
-        memory_definition: {
-          long_term: 'user_profile（稳定档案字段）',
-          staged_summary: 'memory_summaries（阶段记忆摘要/中期）',
-        },
+        ...(includeScopes.chats ? { chat_count: chats.length } : {}),
+        ...(includeScopes.summaries ? { summary_count: summaries.length } : {}),
       },
-      profile: profile || {},
-      sessions,
     }
+
+    if (includeScopes.profile) {
+      result.meta.memory_definition = {
+        ...(result.meta.memory_definition || {}),
+        long_term: 'user_profile（稳定档案字段）',
+      }
+      result.profile = profile || {}
+    }
+
+    if (includeScopes.summaries) {
+      result.meta.memory_definition = {
+        ...(result.meta.memory_definition || {}),
+        staged_summary: 'memory_summaries（阶段记忆摘要/中期）',
+      }
+    }
+
+    if (includeScopes.chats || includeScopes.summaries) {
+      result.sessions = sessionIds.map((sessionId) => {
+        const { sid, charId, charName } = getSessionMeta(sessionId, charNameById)
+        const session = {
+          session_id: sid,
+          char_id: charId,
+          char_name: charName,
+        }
+        if (includeScopes.chats) {
+          session.chats = (chatBySession.get(sid) || []).map((item) => ({
+            id: item.id,
+            role: item.role,
+            content: item.content,
+            ts: item.ts,
+            iso_time: toIso(item.ts),
+          }))
+        }
+        if (includeScopes.summaries) {
+          session.summaries = (summaryBySession.get(sid) || []).map((item) => ({
+            id: item.id,
+            summary_text: item.summary,
+            structured: parseJsonObject(item.structuredJson),
+            from_msg_id: item.fromMsgId,
+            to_msg_id: item.toMsgId,
+            ts: item.ts,
+            iso_time: toIso(item.ts),
+          }))
+        }
+        return session
+      })
+    }
+
+    return result
   }
 
-  writeExportFiles({ targetDir, baseName, markdown, json, jsonl }) {
-    const markdownPath = path.join(targetDir, `${baseName}.md`)
-    const jsonPath = path.join(targetDir, `${baseName}.json`)
-    const jsonlPath = path.join(targetDir, `${baseName}.jsonl`)
+  writeExportFiles({ targetDir, baseName, markdown, json, jsonl, formats }) {
+    let markdownPath = ''
+    let jsonPath = ''
+    let jsonlPath = ''
     const written = []
 
     try {
-      fs.writeFileSync(markdownPath, markdown, 'utf8')
-      written.push(markdownPath)
-      fs.writeFileSync(jsonPath, json, 'utf8')
-      written.push(jsonPath)
-      fs.writeFileSync(jsonlPath, jsonl, 'utf8')
-      written.push(jsonlPath)
+      if (formats.markdown) {
+        markdownPath = path.join(targetDir, `${baseName}.md`)
+        fs.writeFileSync(markdownPath, markdown, 'utf8')
+        written.push(markdownPath)
+      }
+      if (formats.json) {
+        jsonPath = path.join(targetDir, `${baseName}.json`)
+        fs.writeFileSync(jsonPath, json, 'utf8')
+        written.push(jsonPath)
+      }
+      if (formats.jsonl) {
+        jsonlPath = path.join(targetDir, `${baseName}.jsonl`)
+        fs.writeFileSync(jsonlPath, jsonl, 'utf8')
+        written.push(jsonlPath)
+      }
     } catch (err) {
       log.error('[export]', err)
       written.forEach((fp) => {
@@ -274,11 +360,20 @@ class ExportService {
     return { markdownPath, jsonPath, jsonlPath }
   }
 
-  buildExportItem({ targetDir, sessionIds, baseNameHint = '' }) {
+  buildExportItem({
+    targetDir,
+    sessionIds,
+    baseNameHint = '',
+    includeScopes,
+    formats,
+  }) {
     const normalizedSessionIds = this.normalizeSessionIds(sessionIds)
-    const chats = this.db.getChatMessagesBySessionIds(normalizedSessionIds)
-    const summaries = this.db.getMemorySummariesBySessionIds(normalizedSessionIds)
-    const profile = this.db.getUserProfile()
+    const allChats = this.db.getChatMessagesBySessionIds(normalizedSessionIds)
+    const allSummaries = this.db.getMemorySummariesBySessionIds(normalizedSessionIds)
+    const allProfile = this.db.getUserProfile()
+    const chats = includeScopes.chats ? allChats : []
+    const summaries = includeScopes.summaries ? allSummaries : []
+    const profile = includeScopes.profile ? allProfile : null
     const characters = this.db.listCharacters()
     const charNameById = new Map(characters.map((item) => [item.id, item.name]))
 
@@ -289,31 +384,41 @@ class ExportService {
       ? `muyu-export-${suffix}-${timestamp}`
       : `muyu-export-${timestamp}`
 
-    const markdown = this.buildMarkdown({
-      sessionIds: normalizedSessionIds,
-      chats,
-      summaries,
-      profile,
-      charNameById,
-      generatedAt,
-    })
+    const markdown = formats.markdown
+      ? this.buildMarkdown({
+        sessionIds: normalizedSessionIds,
+        chats,
+        summaries,
+        profile,
+        charNameById,
+        generatedAt,
+        includeScopes,
+      })
+      : ''
 
-    const jsonl = this.buildJsonl({
-      sessionIds: normalizedSessionIds,
-      chats,
-      summaries,
-      profile,
-      charNameById,
-      generatedAt,
-    })
-    const json = `${JSON.stringify(this.buildJson({
-      sessionIds: normalizedSessionIds,
-      chats,
-      summaries,
-      profile,
-      charNameById,
-      generatedAt,
-    }), null, 2)}\n`
+    const jsonl = formats.jsonl
+      ? this.buildJsonl({
+        sessionIds: normalizedSessionIds,
+        chats,
+        summaries,
+        profile,
+        charNameById,
+        generatedAt,
+        includeScopes,
+      })
+      : ''
+
+    const json = formats.json
+      ? `${JSON.stringify(this.buildJson({
+        sessionIds: normalizedSessionIds,
+        chats,
+        summaries,
+        profile,
+        charNameById,
+        generatedAt,
+        includeScopes,
+      }), null, 2)}\n`
+      : ''
 
     const { markdownPath, jsonPath, jsonlPath } = this.writeExportFiles({
       targetDir,
@@ -321,6 +426,7 @@ class ExportService {
       markdown,
       json,
       jsonl,
+      formats,
     })
 
     const session = normalizedSessionIds[0] || ''
@@ -351,7 +457,7 @@ class ExportService {
       .filter((sid) => sid !== defaultSessionId)
   }
 
-  buildResultMeta(exportType, items = []) {
+  buildResultMeta(exportType, items = [], selectedScopes = [], selectedFormats = []) {
     const sessionCount = items.reduce((acc, item) => acc + (Number(item.sessionCount) || 0), 0)
     const chatCount = items.reduce((acc, item) => acc + (Number(item.chatCount) || 0), 0)
     const summaryCount = items.reduce((acc, item) => acc + (Number(item.summaryCount) || 0), 0)
@@ -374,15 +480,33 @@ class ExportService {
       markdownPath: first.markdownPath || '',
       jsonPath: first.jsonPath || '',
       jsonlPath: first.jsonlPath || '',
+      selectedScopes,
+      selectedFormats,
     }
   }
 
-  exportToDirectory({ mode = 'all', allStrategy = 'merged', roleSessionId = '', dirPath }) {
+  exportToDirectory({
+    mode = 'all',
+    allStrategy = 'merged',
+    roleSessionId = '',
+    includeScopes,
+    formats,
+    dirPath,
+  }) {
     const targetDir = String(dirPath || '').trim()
     if (!targetDir) {
       throw new Error('导出目录不能为空')
     }
     fs.mkdirSync(targetDir, { recursive: true })
+    const normalizedScopes = this.normalizeIncludeScopes(includeScopes)
+    const normalizedFormats = this.normalizeFormats(formats)
+
+    if (normalizedScopes.selectedScopes.length === 0) {
+      throw new Error('请至少选择一项导出内容')
+    }
+    if (normalizedFormats.selectedFormats.length === 0) {
+      throw new Error('请至少选择一种导出格式')
+    }
 
     const safeMode = String(mode || 'all').trim()
     if (safeMode === 'role') {
@@ -392,26 +516,22 @@ class ExportService {
         targetDir,
         sessionIds: [sid],
         baseNameHint: inferCharIdFromSessionId(sid) || sid,
+        includeScopes: normalizedScopes,
+        formats: normalizedFormats,
       })
-      return this.buildResultMeta('role', [item])
+      return this.buildResultMeta('role', [item], normalizedScopes.selectedScopes, normalizedFormats.selectedFormats)
     }
 
-    if (String(allStrategy || '').trim() === 'split_by_role') {
-      const roleSessionIds = this.resolveRoleSessionIdsForSplit()
-      const items = roleSessionIds.map((sid) => this.buildExportItem({
-        targetDir,
-        sessionIds: [sid],
-        baseNameHint: inferCharIdFromSessionId(sid) || sid,
-      }))
-      return this.buildResultMeta('all_split_by_role', items)
-    }
-
-    const allSessionIds = this.normalizeSessionIds(this.db.listAllSessionIds())
-    const mergedItem = this.buildExportItem({
+    // 产品规则：导出全部固定按角色拆分，allStrategy 仅保留兼容参数。
+    const roleSessionIds = this.resolveRoleSessionIdsForSplit()
+    const items = roleSessionIds.map((sid) => this.buildExportItem({
       targetDir,
-      sessionIds: allSessionIds,
-    })
-    return this.buildResultMeta('all_merged', [mergedItem])
+      sessionIds: [sid],
+      baseNameHint: inferCharIdFromSessionId(sid) || sid,
+      includeScopes: normalizedScopes,
+      formats: normalizedFormats,
+    }))
+    return this.buildResultMeta('all_split_by_role', items, normalizedScopes.selectedScopes, normalizedFormats.selectedFormats)
   }
 }
 

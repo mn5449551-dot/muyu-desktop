@@ -13,6 +13,12 @@ import '../styles/chat-window.css'
 const PCM_TARGET_SAMPLE_RATE = 16000
 const PCM_CHUNK_MS = 100
 const PCM_CHUNK_SAMPLES = Math.round((PCM_TARGET_SAMPLE_RATE * PCM_CHUNK_MS) / 1000)
+const PROFILE_CONFLICT_FIELD_LABELS = Object.freeze({
+  name: '姓名',
+  occupation: '职业',
+  birthday: '生日',
+  birthday_year: '出生年份',
+})
 
 function downsampleFloat32Buffer(source, inputRate, outputRate) {
   const input = source instanceof Float32Array ? source : Float32Array.from(source || [])
@@ -185,6 +191,8 @@ export default function ChatWindowView() {
   const [transcribing, setTranscribing] = useState(false)
   const [speaking, setSpeaking] = useState(false)
   const [voiceHint, setVoiceHint] = useState('')
+  const [pendingMemoryConflict, setPendingMemoryConflict] = useState(null)
+  const [resolvingMemoryConflict, setResolvingMemoryConflict] = useState(false)
 
   const loadSeqRef = useRef(0)
   const activeRequestRef = useRef('')
@@ -795,6 +803,52 @@ export default function ChatWindowView() {
     }
   }, [checkApiKeyConfigured])
 
+  const refreshPendingMemoryConflict = useCallback(async () => {
+    try {
+      const pending = await window.electronAPI.getPendingMemoryConflict()
+      if (!pending || !pending.fieldKey || !pending.candidateValue) {
+        setPendingMemoryConflict(null)
+        return null
+      }
+      setPendingMemoryConflict(pending)
+      return pending
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn('[chat] refreshPendingMemoryConflict failed:', err?.message || String(err))
+      }
+      return null
+    }
+  }, [])
+
+  const resolvePendingMemoryConflict = useCallback(async (action) => {
+    const decisionId = Number(pendingMemoryConflict?.id || 0)
+    if (!decisionId || resolvingMemoryConflict) return
+    try {
+      setResolvingMemoryConflict(true)
+      const result = await window.electronAPI.resolveMemoryConflict({ id: decisionId, action })
+      if (result?.pending && result.pending.fieldKey) {
+        setPendingMemoryConflict(result.pending)
+      } else {
+        setPendingMemoryConflict(null)
+      }
+      if (action === 'update') {
+        appendAssistantMessage('已更新长期档案字段。', { isError: false })
+      }
+    } catch (err) {
+      const hint = buildChatErrorMessage({
+        charId: currentCharIdRef.current,
+        payload: {
+          source: 'memory',
+          message: err?.message || String(err),
+        },
+      })
+      setError(hint.text)
+      appendAssistantMessage(hint.text, { isError: true })
+    } finally {
+      setResolvingMemoryConflict(false)
+    }
+  }, [appendAssistantMessage, pendingMemoryConflict?.id, resolvingMemoryConflict])
+
   useEffect(() => {
     const refresh = () => {
       refreshRuntimeConfig()
@@ -934,6 +988,7 @@ export default function ChatWindowView() {
       const autoPlay = voiceConfig.autoPlay !== false
       setVoiceAutoPlay(autoPlay)
       voiceAutoPlayRef.current = autoPlay
+      refreshPendingMemoryConflict()
     }).finally(() => setLoading(false))
 
     const unsubChars = window.electronAPI.onCharactersUpdated((rows) => {
@@ -1006,6 +1061,7 @@ export default function ChatWindowView() {
       if (finalText) {
         playVoiceReplyRef.current?.(finalText, currentCharIdRef.current)
       }
+      refreshPendingMemoryConflict()
     })
 
     const unsubError = window.electronAPI.onLlmError((payload) => {
@@ -1106,6 +1162,9 @@ export default function ChatWindowView() {
         loadChatByCharId(currentCharIdRef.current)
       }
     })
+    const unsubMemoryConflictRefresh = window.electronAPI.onMemoryConflictRefresh(() => {
+      refreshPendingMemoryConflict()
+    })
 
     if (window?.e2eAPI?.isEnabled) {
       window.__e2eChatVoiceStreamHooks = {
@@ -1126,6 +1185,7 @@ export default function ChatWindowView() {
       unsubVoiceFinal()
       unsubVoiceError()
       unsubChatReload()
+      unsubMemoryConflictRefresh()
       stopActiveStreamRef.current()
       stopRecordingRef.current?.({ finalize: false })
       cancelLiveVoiceSession(true)
@@ -1135,7 +1195,14 @@ export default function ChatWindowView() {
         delete window.__e2eChatVoiceStreamHooks
       }
     }
-  }, [appendAssistantMessage, applyVoiceTranscriptUpdate, cancelLiveVoiceSession, clearLiveVoiceState, stopLiveTyping])
+  }, [
+    appendAssistantMessage,
+    applyVoiceTranscriptUpdate,
+    cancelLiveVoiceSession,
+    clearLiveVoiceState,
+    refreshPendingMemoryConflict,
+    stopLiveTyping,
+  ])
 
   useEffect(() => {
     if (!char?.id) return
@@ -1514,6 +1581,10 @@ export default function ChatWindowView() {
       text: `语音播放${voiceAutoPlay ? '开' : '关'} · 点击“语”开始录音`,
     }
   })()
+  const conflictFieldLabel = PROFILE_CONFLICT_FIELD_LABELS[pendingMemoryConflict?.fieldKey] || '档案字段'
+  const conflictCurrentValue = String(pendingMemoryConflict?.currentValue || '').trim() || '（空）'
+  const conflictCandidateValue = String(pendingMemoryConflict?.candidateValue || '').trim() || '（空）'
+  const conflictCount = Number(pendingMemoryConflict?.count7d || 0)
 
   return (
     <div className="chat-window-root" data-testid="chat-root" data-char-id={char?.id || ''}>
@@ -1542,6 +1613,41 @@ export default function ChatWindowView() {
             <button className="chat-window-action" data-testid="chat-close" onClick={closeChatWindow} title="关闭聊天">×</button>
           </div>
         </header>
+
+        {pendingMemoryConflict && (
+          <section className="chat-memory-conflict-banner" data-testid="chat-memory-conflict-banner">
+            <p className="chat-memory-conflict-text">
+              记忆待确认：{conflictFieldLabel} 当前为“{conflictCurrentValue}”，近 7 天检测到 {conflictCount} 次冲突，
+              建议更新为“{conflictCandidateValue}”。
+            </p>
+            <div className="chat-memory-conflict-actions">
+              <button
+                type="button"
+                className="chat-memory-conflict-btn"
+                disabled={resolvingMemoryConflict}
+                onClick={() => resolvePendingMemoryConflict('keep')}
+              >
+                保留原值
+              </button>
+              <button
+                type="button"
+                className="chat-memory-conflict-btn chat-memory-conflict-btn--primary"
+                disabled={resolvingMemoryConflict}
+                onClick={() => resolvePendingMemoryConflict('update')}
+              >
+                更新为新值
+              </button>
+              <button
+                type="button"
+                className="chat-memory-conflict-btn"
+                disabled={resolvingMemoryConflict}
+                onClick={() => resolvePendingMemoryConflict('defer')}
+              >
+                稍后处理
+              </button>
+            </div>
+          </section>
+        )}
 
         <div ref={logRef} className="chat-window-log" data-testid="chat-log">
           {messages.length === 0 && (

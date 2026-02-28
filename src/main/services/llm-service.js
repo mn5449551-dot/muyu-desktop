@@ -14,8 +14,7 @@ const MEMORY_INJECTION_POLICY_PROMPT = getPromptText(
 1) 用户当前输入（本轮）；
 2) 最近对话上下文；
 3) 用户档案（稳定信息）；
-4) 关系状态；
-5) 阶段记忆摘要（中期）。
+4) 阶段记忆摘要（中期）。
 
 执行规则：
 - 若历史记忆与当前表达冲突，以当前表达为准。
@@ -42,21 +41,26 @@ const OUTPUT_UNSAFE_PATTERNS = [
 ]
 
 const SENTENCE_END_CHARS = new Set(['。', '！', '？', '!', '?', '；', ';', '\n'])
+// 注：SAFE_FALLBACK_TEXT 用于输出安全降级（LLM 输出未通过风险检测时的硬编码兜底）。
+// INPUT_REFUSAL（见 buildInputRefusal）用于输入拦截（用户输入命中高风险时返回的引导文案）。
+// 两者触发时机不同，请分开维护。
 const SAFE_FALLBACK_TEXT = '这个话题我不能这样回答，但我可以帮你换个安全、可执行的方向。'
 const SAFE_REGEN_SYSTEM_PROMPT = '请基于角色设定重写一版完整回复。要求：不得包含种族歧视煽动、国家主权攻击煽动等高风险表达；语气自然、简短、可执行。'
 const SUMMARY_STRUCTURED_OUTPUT_PROMPT = `你是记忆结构化提取器。必须输出严格 JSON 对象，不要输出任何额外文字、markdown、解释。
 字段要求：
 - summary_text: string，1-120字，概括本轮要沉淀的关键信息
-- facts: string[]，最多8条
+- facts: string[]，最多8条，用户陈述的客观事实（含情感事件，如"用户说最近失眠"）
 - preferences: string[]，最多8条
 - goals: string[]，最多8条
 - constraints: string[]，最多8条
 - todos: string[]，最多8条
 - risks: string[]，最多8条
+- key_moments: string[]，最多5条，重要情感时刻（如"用户今天哭了"、"庆祝获得新工作"），没有则空数组
+- open_threads: string[]，最多5条，未闭合话题（如"用户明天有面试，尚未反馈结果"），没有则空数组
 - confidence: number，0~1
 若无内容请输出空数组，禁止编造。`
 const SUMMARY_REPAIR_PROMPT = `你是 JSON 修复器。请把给定内容修复为合法 JSON 对象，并严格符合指定字段：
-summary_text, facts, preferences, goals, constraints, todos, risks, confidence。
+summary_text, facts, preferences, goals, constraints, todos, risks, key_moments, open_threads, confidence。
 禁止输出 JSON 以外内容。`
 const PROFILE_REPAIR_PROMPT = `你是 JSON 修复器。请把给定内容修复为合法 JSON 对象，并严格符合字段：
 name, occupation, birthday, birthday_year, traits, notes_append。
@@ -81,6 +85,21 @@ function computeRelevanceScore(text, keywords = []) {
 function normalizeSessionId(input, fallback = FALLBACK_SESSION_ID) {
   const value = String(input || '').trim()
   return value || fallback
+}
+
+function parseSummaryStructuredJson(summary) {
+  const raw = String(summary?.structuredJson || '').trim()
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function hasSummaryOpenThreads(summary) {
+  const structured = parseSummaryStructuredJson(summary)
+  return Array.isArray(structured?.open_threads) && structured.open_threads.length > 0
 }
 
 function parseJsonLoosely(rawText) {
@@ -151,6 +170,8 @@ function normalizeStructuredSummary(input) {
   const constraints = normalizeStringList(input.constraints)
   const todos = normalizeStringList(input.todos)
   const risks = normalizeStringList(input.risks)
+  const keyMoments = normalizeStringList(input.key_moments, 5)
+  const openThreads = normalizeStringList(input.open_threads, 5)
   const confidence = normalizeConfidence(input.confidence)
 
   const hasContent = Boolean(
@@ -161,6 +182,8 @@ function normalizeStructuredSummary(input) {
     || constraints.length
     || todos.length
     || risks.length
+    || keyMoments.length
+    || openThreads.length
   )
   if (!hasContent) return null
 
@@ -172,6 +195,8 @@ function normalizeStructuredSummary(input) {
     constraints,
     todos,
     risks,
+    key_moments: keyMoments,
+    open_threads: openThreads,
     confidence,
   }
 }
@@ -248,21 +273,16 @@ class LlmService {
       systemMessages.push({ role: 'system', content: `长期记忆（用户档案）：\n${profileText}` })
     }
 
-    if (typeof this.db.getCharacterMemory === 'function') {
-      const charMem = this.db.getCharacterMemory(sid)
-      let stageText = ''
-      if (charMem?.relationshipStage === 'close') {
-        stageText = '是亲密的老朋友'
-      } else if (charMem?.relationshipStage && charMem.relationshipStage !== 'new') {
-        stageText = '已相识一段时间'
-      }
-      if (stageText) {
-        systemMessages.push({ role: 'system', content: `与用户的关系：${stageText}` })
-      }
-    }
-
     if (relevantSummaries.length > 0) {
-      const text = relevantSummaries.map((item, index) => `#${index + 1} ${item.summary}`).join('\n')
+      const lastId = relevantSummaries[relevantSummaries.length - 1]?.id
+      const labeled = relevantSummaries.map((item) => {
+        const hasOpenThreads = hasSummaryOpenThreads(item)
+        const tag = hasOpenThreads ? '【未完话题】' : item.id === lastId ? '【近况】' : '【过往】'
+        return { tag, text: item.summary, hasOpenThreads }
+      })
+      // 未完话题优先排在最前
+      labeled.sort((a, b) => (b.hasOpenThreads ? 1 : 0) - (a.hasOpenThreads ? 1 : 0))
+      const text = labeled.map((entry, index) => `${entry.tag} #${index + 1} ${entry.text}`).join('\n')
       systemMessages.push({ role: 'system', content: `中期记忆摘要（与当前问题相关）：\n${text}` })
     }
 
@@ -272,17 +292,32 @@ class LlmService {
   pickRelevantSummaries(summaries = [], prompt = '', limit = MAX_RELEVANT_SUMMARIES) {
     if (!Array.isArray(summaries) || summaries.length === 0) return []
 
+    const withMeta = summaries.map((item, index) => {
+      const hasOpenThreads = hasSummaryOpenThreads(item)
+      return { item, index, hasOpenThreads }
+    })
+
     const keywords = extractKeywords(prompt)
+    const total = summaries.length
+
     if (keywords.length === 0) {
-      return summaries.slice(-limit)
+      // No keywords: prioritize open_threads, then most recent
+      const withOpen = withMeta.filter((e) => e.hasOpenThreads)
+      const remaining = withMeta.filter((e) => !e.hasOpenThreads)
+      return [...withOpen, ...remaining]
+        .slice(-limit)
+        .map((e) => e.item)
     }
 
-    const scored = summaries
-      .map((item) => ({
-        item,
-        score: computeRelevanceScore(item.summary, keywords),
-      }))
-      .filter((entry) => entry.score > 0)
+    // Score = relevance * 0.7 + recency * 0.3
+    const scored = withMeta
+      .map((entry) => {
+        const relevance = computeRelevanceScore(entry.item.summary, keywords)
+        const recency = total > 1 ? entry.index / (total - 1) : 1
+        const score = relevance * 0.7 + recency * 0.3
+        return { ...entry, relevance, score }
+      })
+      .filter((entry) => entry.relevance > 0 || entry.hasOpenThreads)
       .sort((a, b) => b.score - a.score || (b.item.ts || 0) - (a.item.ts || 0))
       .slice(0, limit)
       .map((entry) => entry.item)
@@ -446,6 +481,10 @@ class LlmService {
   detectInputRiskLevel(text) {
     const source = String(text || '').trim()
     if (!source) return 'L0'
+    // intent 词（怎么/如何/帮我 等）为日常高频词，单独判断误判率高。
+    // 当前策略：须同时命中 intent 词 AND 高风险 topic 词才判 L3，以降低误判。
+    // 副作用：纯表态类语句（如"支持台独！大家行动起来"）若不含 intent 词则不触发。
+    // 如需更精准，可改为语义联合判断，或仅保留 topic 词检测去掉 intent 前置过滤。
     const hasIntent = RISK_INTENT_PATTERNS.some((pattern) => pattern.test(source))
     if (!hasIntent) return 'L0'
 
@@ -757,7 +796,7 @@ class LlmService {
       const summaryText = normalizeShortText(parsed.summary_text, 120)
         || normalizeShortText(
           []
-            .concat(parsed.facts || [], parsed.preferences || [], parsed.goals || [], parsed.constraints || [], parsed.todos || [])
+            .concat(parsed.facts || [], parsed.key_moments || [], parsed.preferences || [], parsed.goals || [], parsed.constraints || [], parsed.todos || [])
             .slice(0, 4)
             .join('；'),
           120
@@ -799,7 +838,7 @@ class LlmService {
         `用户已 ${daysSince} 天没有打开应用，请主动问候，表达想念或关心，语气自然不刻意。`
       )
     contextMessages.push({ role: 'system', content: reason })
-    contextMessages.push({ role: 'user', content: '（主动问候触发，无用户输入）' })
+    // 不添加假的 user message，避免 LLM 把触发文案当成用户发言来回复
 
     const result = await this.requestNonStreamCompletion({
       credentials,
@@ -816,34 +855,18 @@ class LlmService {
     const credentials = this.db.getLlmCredentials()
     if (!credentials.apiKey) return null
 
-    const prompt = renderPrompt(
-      PROMPT_IDS.PROFILE_EXTRACT,
-      { conversationText: input },
-      `从以下对话中提取用户信息。
-规则：
-- 只提取对话中明确出现的内容，不推断，不猜测
-- 没有的字段输出 null 或 []
-- birthday 格式为 MM-DD（如 03-15），没有则 null
-- birthday_year 为数字（如 1995），没有则 null
-
-输出 JSON（不要输出其他内容）：
-{
-  "name": "...",
-  "occupation": "...",
-  "birthday": "...",
-  "birthday_year": null,
-  "traits": ["...", "..."],
-  "notes_append": "..."
-}
-
-对话：
-${input}`
-    )
+    // 将提取指令放入 system message，对话内容放入 user message，符合 instruction-following 范式
+    const systemInstruction = getPromptText(PROMPT_IDS.PROFILE_EXTRACT, '')
+      .replace(/\n*对话：\n\{conversationText\}$/, '')
+      .trim()
 
     const result = await this.requestNonStreamCompletion({
       credentials,
       temperature: 0.1,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: input },
+      ],
     })
 
     let extracted = normalizeProfileExtraction(parseJsonLoosely(result))

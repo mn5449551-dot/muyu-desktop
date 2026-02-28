@@ -41,10 +41,12 @@ const voiceService = new VoiceService(db)
 let mainWindow = null
 let settingsWindow = null
 let chatWindow = null
+let memoryWindow = null
 let tray = null
 let isQuittingFlow = false
 let isMainWindowIgnoringMouse = true
 let petDragState = null
+let lastPetDragTopInsetPx = 0
 let chatMovePersistTimer = null
 let chatResizePersistTimer = null
 let chatProgrammaticMoveUntil = 0
@@ -52,6 +54,8 @@ let chatProgrammaticMoveUntil = 0
 const PET_BASE_WIDTH = 240
 const PET_BASE_HEIGHT = 340
 const PET_SCALE_STEP = 0.1
+const PET_DRAG_MIN_VISIBLE_HEIGHT = 48
+const PET_DRAG_POINTER_TOP_MARGIN = 24
 const CHAT_WINDOW_DEFAULT_WIDTH = 384
 const CHAT_WINDOW_DEFAULT_HEIGHT = 560
 const CHAT_WINDOW_MIN_WIDTH = 340
@@ -68,19 +72,31 @@ function getRendererEntry() {
   return path.join(__dirname, '../../dist/renderer/index.html')
 }
 
-function getRendererUrl(view = 'game') {
-  const query = view === 'game' ? '' : `?view=${encodeURIComponent(view)}`
-  return `http://localhost:5173/${query}`
+function buildViewQuery(view = 'game', extraQuery = {}) {
+  const query = {}
+  if (view !== 'game') query.view = view
+  Object.entries(extraQuery || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    query[key] = String(value)
+  })
+  return query
 }
 
-function loadRendererWindow(win, view = 'game') {
+function getRendererUrl(view = 'game', extraQuery = {}) {
+  const params = new URLSearchParams(buildViewQuery(view, extraQuery))
+  const query = params.toString()
+  return query ? `http://localhost:5173/?${query}` : 'http://localhost:5173/'
+}
+
+function loadRendererWindow(win, view = 'game', extraQuery = {}) {
+  const queryObj = buildViewQuery(view, extraQuery)
   if (useDistRenderer) {
-    if (view === 'game') {
+    if (Object.keys(queryObj).length === 0) {
       return win.loadFile(getRendererEntry())
     }
-    return win.loadFile(getRendererEntry(), { query: { view } })
+    return win.loadFile(getRendererEntry(), { query: queryObj })
   }
-  return win.loadURL(getRendererUrl(view))
+  return win.loadURL(getRendererUrl(view, extraQuery))
 }
 
 function clampScale(value) {
@@ -239,6 +255,52 @@ function createSettingsWindow() {
   return settingsWindow
 }
 
+function normalizeMemoryWindowQuery(payload = {}) {
+  const query = {}
+  const sessionId = String(payload?.sessionId || '').trim()
+  const keyword = String(payload?.keyword || '').trim()
+  const range = String(payload?.range || '').trim()
+  if (sessionId) query.sessionId = sessionId
+  if (keyword) query.keyword = keyword
+  if (range && range !== 'all') query.range = range
+  return query
+}
+
+function createMemoryWindow(payload = {}) {
+  const query = normalizeMemoryWindowQuery(payload)
+  if (memoryWindow && !memoryWindow.isDestroyed()) {
+    loadRendererWindow(memoryWindow, 'memory', query)
+    memoryWindow.show()
+    memoryWindow.focus()
+    return memoryWindow
+  }
+
+  memoryWindow = new BrowserWindow({
+    width: 980,
+    height: 720,
+    minWidth: 860,
+    minHeight: 620,
+    show: false,
+    frame: true,
+    autoHideMenuBar: true,
+    backgroundColor: '#f6f3ea',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  })
+
+  loadRendererWindow(memoryWindow, 'memory', query)
+  log.info('memory window created')
+
+  memoryWindow.once('ready-to-show', () => memoryWindow && memoryWindow.show())
+  memoryWindow.on('closed', () => { memoryWindow = null })
+
+  return memoryWindow
+}
+
 function getCurrentCharId() {
   const state = db.getState()
   return String(state.currentCharId || 'muyu')
@@ -358,6 +420,30 @@ function clampMainWindowBoundsToDisplay(bounds) {
   }
 }
 
+function getPetDragClampMeta(bounds) {
+  const center = {
+    x: bounds.x + Math.round(bounds.width / 2),
+    y: bounds.y + Math.round(bounds.height / 2),
+  }
+  const disp = screen.getDisplayNearestPoint(center)
+  const display = disp.workArea
+  const maxX = display.x + display.width - bounds.width
+  const maxY = display.y + display.height - bounds.height
+  // Allow full transparent headroom to move above work area top.
+  const allowedTopOverflow = Math.max(0, bounds.height - PET_DRAG_MIN_VISIBLE_HEIGHT)
+  const minY = display.y - allowedTopOverflow
+  return { display, maxX, maxY, minY }
+}
+
+function clampPetDragBoundsToDisplay(bounds) {
+  const { display, maxX, maxY, minY } = getPetDragClampMeta(bounds)
+  return {
+    ...bounds,
+    x: Math.max(display.x, Math.min(maxX, bounds.x)),
+    y: Math.max(minY, Math.min(maxY, bounds.y)),
+  }
+}
+
 function clampChatBoundsToDisplay(bounds, display) {
   const maxX = display.x + display.width - bounds.width
   const maxY = display.y + display.height - bounds.height
@@ -468,6 +554,9 @@ function hideAllWindows() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.hide()
   }
+  if (memoryWindow && !memoryWindow.isDestroyed()) {
+    memoryWindow.hide()
+  }
   return { visible: false }
 }
 
@@ -531,14 +620,14 @@ function createTray() {
 }
 
 function sendToAllWindows(channel, payload) {
-  ;[mainWindow, settingsWindow, chatWindow].forEach((win) => {
+  ;[mainWindow, settingsWindow, chatWindow, memoryWindow].forEach((win) => {
     if (win && !win.isDestroyed()) {
       win.webContents.send(channel, payload)
     }
   })
 }
 
-function startPetDrag(screenX, screenY) {
+function startPetDrag(screenX, screenY, visibleTopInsetPx) {
   if (!mainWindow || mainWindow.isDestroyed()) return
 
   const x = Number(screenX)
@@ -546,11 +635,19 @@ function startPetDrag(screenX, screenY) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return
 
   const bounds = mainWindow.getBounds()
+  const maxOverflow = Math.max(0, bounds.height - PET_DRAG_MIN_VISIBLE_HEIGHT)
+  const pointerOffsetY = Math.round(y - bounds.y)
+  const pointerBasedOverflow = pointerOffsetY - PET_DRAG_POINTER_TOP_MARGIN
+  const rawInset = Number(visibleTopInsetPx)
+  const visibleTopInset = Number.isFinite(rawInset) ? Math.round(rawInset) : 0
+  const topInset = Math.max(0, Math.min(maxOverflow, Math.max(visibleTopInset, pointerBasedOverflow)))
+  lastPetDragTopInsetPx = topInset
   petDragState = {
     offsetX: x - bounds.x,
     offsetY: y - bounds.y,
     lastX: bounds.x,
     lastY: bounds.y,
+    visibleTopInsetPx: topInset,
   }
 }
 
@@ -568,7 +665,7 @@ function movePetDrag(screenX, screenY) {
     width: bounds.width,
     height: bounds.height,
   }
-  const clamped = clampMainWindowBoundsToDisplay(unclamped)
+  const clamped = clampPetDragBoundsToDisplay(unclamped)
   const nextX = clamped.x
   const nextY = clamped.y
   if (nextX === petDragState.lastX && nextY === petDragState.lastY) return
@@ -693,6 +790,7 @@ function getRuntimeState() {
     },
     state,
     petScale: prefs.scale,
+    petDragTopInsetPx: Number(lastPetDragTopInsetPx || 0),
     characters: chars.map((item) => ({
       id: item.id,
       name: item.name,
@@ -714,11 +812,15 @@ function getRuntimeState() {
       settings: settingsWindow && !settingsWindow.isDestroyed()
         ? { visible: settingsWindow.isVisible(), bounds: settingsWindow.getBounds() }
         : null,
+      memory: memoryWindow && !memoryWindow.isDestroyed()
+        ? { visible: memoryWindow.isVisible(), bounds: memoryWindow.getBounds() }
+        : null,
     },
   }
 }
 
 function getDialogOwnerWindow() {
+  if (memoryWindow && !memoryWindow.isDestroyed()) return memoryWindow
   if (settingsWindow && !settingsWindow.isDestroyed()) return settingsWindow
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
   return null
@@ -741,7 +843,7 @@ function registerMainWindowIpcHandlers() {
   })
 
   ipcMain.on(IPC.PET_DRAG_START, (_event, payload) => {
-    startPetDrag(payload?.screenX, payload?.screenY)
+    startPetDrag(payload?.screenX, payload?.screenY, payload?.visibleTopInsetPx)
   })
 
   ipcMain.on(IPC.PET_DRAG_MOVE, (_event, payload) => {
@@ -766,6 +868,10 @@ function registerMainWindowIpcHandlers() {
   })
 
   ipcMain.on(IPC.OPEN_SETTINGS, () => createSettingsWindow())
+  ipcMain.handle(IPC.OPEN_MEMORY_WINDOW, (_event, payload) => {
+    createMemoryWindow(payload || {})
+    return { ok: true }
+  })
 }
 
 function registerE2EIpcHandlers() {
@@ -858,6 +964,8 @@ function registerCharacterIpcHandlers() {
   ipcMain.handle(IPC.DB_GET_STATE, () => db.getState())
   ipcMain.on(IPC.DB_SAVE_COUNT, (_event, count) => db.saveCount(count))
   ipcMain.on(IPC.DB_SET_CHAR, (_event, charId) => db.setCurrentChar(charId))
+  ipcMain.handle(IPC.DB_GET_REACHED_MILESTONES, () => db.getReachedMilestones())
+  ipcMain.on(IPC.DB_SAVE_REACHED_MILESTONE, (_e, n) => db.saveReachedMilestone(n))
 
   ipcMain.handle(IPC.DB_LIST_CHARACTERS, () => db.listCharacters())
 
@@ -906,8 +1014,40 @@ function registerConfigIpcHandlers() {
   ipcMain.handle(IPC.PET_SCALE_ADJUST, (_event, payload) => adjustPetScale(payload?.delta))
   ipcMain.handle(IPC.PET_SCALE_RESET, () => resizeMainWindow(1))
 
+  ipcMain.on(IPC.PET_HUD_EXPAND, (_e, requiredWidth) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const bounds = mainWindow.getBounds()
+    const w = Math.max(bounds.width, Math.ceil(requiredWidth))
+    if (w <= bounds.width) return
+    mainWindow.setBounds({
+      x: Math.round(bounds.x - (w - bounds.width) / 2),
+      y: bounds.y,
+      width: w,
+      height: bounds.height,
+    })
+  })
+
+  ipcMain.on(IPC.PET_HUD_SHRINK, () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const prefs = db.getPetUiPrefs()
+    const { width } = getPetWindowSize(prefs.scale)
+    const bounds = mainWindow.getBounds()
+    if (bounds.width <= width) return
+    mainWindow.setBounds({
+      x: Math.round(bounds.x + (bounds.width - width) / 2),
+      y: bounds.y,
+      width,
+      height: bounds.height,
+    })
+  })
+
   ipcMain.handle(IPC.PROFILE_GET, () => db.getUserProfile())
   ipcMain.handle(IPC.PROFILE_SET, (_event, payload) => db.setUserProfile(payload || {}))
+  ipcMain.handle(IPC.PROFILE_PINS_GET, () => db.getProfilePinnedKeys())
+  ipcMain.handle(IPC.PROFILE_PINS_SET, (_event, payload) => ({
+    ok: true,
+    keys: db.setProfilePinnedKeys(payload),
+  }))
   ipcMain.handle(IPC.PROMPTS_LIST, () => {
     return listReadonlyPrompts({
       memorySummaryPrompt: db.getMemorySummarySystemPrompt(),
@@ -937,6 +1077,8 @@ function registerLlmIpcHandlers() {
           await memoryService.runSummaryIfNeeded({ sessionId, threshold: 20, maxMessages: 40 })
         } catch (error) {
           log.error('[memory-summary-auto]', error)
+        } finally {
+          sendToAllWindows(IPC.MEMORY_CONFLICT_REFRESH, { sessionId })
         }
       },
     })
@@ -992,6 +1134,18 @@ function registerVoiceIpcHandlers() {
 }
 
 function registerExportAndMemoryIpcHandlers() {
+  function parseSummaryStructured(value) {
+    const raw = String(value || '').trim()
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+    } catch {
+      // ignore
+    }
+    return null
+  }
+
   ipcMain.handle(IPC.EXPORT_DOCS, async (_event, payload) => {
     const result = await chooseExportDirectory()
     if (result.canceled || !result.filePaths[0]) {
@@ -1000,41 +1154,88 @@ function registerExportAndMemoryIpcHandlers() {
     const mode = String(payload?.mode || 'all').trim() || 'all'
     const allStrategy = String(payload?.allStrategy || 'merged').trim() || 'merged'
     const roleSessionId = String(payload?.roleSessionId || '').trim()
+    const includeScopes = payload?.includeScopes && typeof payload.includeScopes === 'object'
+      ? payload.includeScopes
+      : undefined
+    const formats = payload?.formats && typeof payload.formats === 'object'
+      ? payload.formats
+      : undefined
     return {
       canceled: false,
       ...exportService.exportToDirectory({
         mode,
         allStrategy,
         roleSessionId,
+        includeScopes,
+        formats,
         dirPath: result.filePaths[0],
       }),
     }
   })
 
-  ipcMain.handle(IPC.PROACTIVE_ENABLED_GET, () =>
-    db.getBooleanAppStateValue('proactive_enabled', false)
-  )
+  ipcMain.handle(IPC.MEMORY_LIST, (_, payload) => {
+    const isLegacy = typeof payload === 'string'
+    const query = isLegacy
+      ? { sessionId: payload, limit: 5, offset: 0 }
+      : (payload || {})
+    const sid = String(query.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
+    const result = typeof db.queryMemorySummariesForUI === 'function'
+      ? db.queryMemorySummariesForUI({
+        sessionId: sid,
+        limit: query.limit,
+        offset: query.offset,
+        keyword: query.keyword,
+        fromTs: query.fromTs,
+        toTs: query.toTs,
+      })
+      : {
+        items: db.getMemorySummariesForUI(sid),
+        total: 0,
+        limit: 0,
+        offset: 0,
+        hasMore: false,
+      }
 
-  ipcMain.handle(IPC.PROACTIVE_ENABLED_SET, (_, val) =>
-    db.setAppStateValue('proactive_enabled', val ? '1' : '0')
-  )
+    const items = Array.isArray(result.items) ? result.items.map((item) => ({
+      ...item,
+      sessionId: sid,
+      structured: parseSummaryStructured(item.structuredJson),
+    })) : []
 
-  ipcMain.handle(IPC.MEMORY_LIST, (_, sessionId) =>
-    db.getMemorySummariesForUI(String(sessionId || DEFAULT_SESSION_ID))
-  )
+    if (isLegacy) return items
+    return {
+      items,
+      total: Number(result.total || items.length || 0),
+      limit: Number(result.limit || 0),
+      offset: Number(result.offset || 0),
+      hasMore: Boolean(result.hasMore),
+    }
+  })
 
   ipcMain.handle(IPC.MEMORY_DELETE, (_, id) => {
     db.softDeleteSummary(id)
     return { ok: true }
   })
+
+  ipcMain.handle(IPC.MEMORY_CONFLICT_PENDING_GET, () => {
+    return db.getPendingProfileConflictDecision()
+  })
+
+  ipcMain.handle(IPC.MEMORY_CONFLICT_COUNT_GET, () => {
+    return { count: db.getPendingProfileConflictCount() }
+  })
+
+  ipcMain.handle(IPC.MEMORY_CONFLICT_RESOLVE, (_event, payload) => {
+    const result = db.resolveProfileConflictDecision(payload?.id, payload?.action)
+    sendToAllWindows(IPC.MEMORY_CONFLICT_REFRESH, { reason: 'resolved', action: payload?.action || '' })
+    return result
+  })
 }
 
 async function checkProactiveGreeting() {
   const now = Date.now()
-  const proactiveEnabled = db.getBooleanAppStateValue('proactive_enabled', false)
-  if (!proactiveEnabled) {
-    db.setAppStateValue('last_open_at', String(now))
-    return
+  if (db.getAppStateValue('proactive_enabled') !== '1') {
+    db.setAppStateValue('proactive_enabled', '1')
   }
 
   const todayUTC = new Date(now).toISOString().slice(0, 10)

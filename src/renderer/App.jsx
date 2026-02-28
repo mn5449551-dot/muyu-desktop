@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import GameView from './components/GameView'
 import SettingsView from './components/SettingsView'
 import ChatWindowView from './components/ChatWindowView'
+import MemoryWindowView from './components/MemoryWindowView'
 import { findById, mergeCharacters } from '../utils/characters'
 
 function getCurrentView() {
@@ -19,22 +20,27 @@ export default function App() {
     Promise.all([
       window.electronAPI.getState(),
       window.electronAPI.listCharacters(),
-    ]).then(([state, rows]) => {
+      window.electronAPI.getReachedMilestones(),
+    ]).then(([state, rows, reachedMilestones]) => {
       const characters = mergeCharacters(rows)
       setInitialState({
         count: state.count,
         characters,
         char: findById(state.currentCharId, characters),
+        reachedMilestones,
       })
     })
   }, [view])
 
-  if (view === 'settings') {
-    return <SettingsView />
-  }
-
-  if (view === 'chat') {
-    return <ChatWindowView />
+  switch (view) {
+    case 'settings':
+      return <SettingsView />
+    case 'chat':
+      return <ChatWindowView />
+    case 'memory':
+      return <MemoryWindowView />
+    default:
+      break
   }
 
   // 加载中显示占位块，避免透明窗口完全不可见
@@ -53,6 +59,7 @@ export default function App() {
       initialCount={initialState.count}
       initialChar={initialState.char}
       initialCharacters={initialState.characters}
+      initialReachedMilestones={initialState.reachedMilestones}
     />
   )
 }

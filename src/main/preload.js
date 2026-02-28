@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setIgnoreMouse: (ignore) => ipcRenderer.send('set-ignore-mouse', ignore),
   showContextMenu: () => ipcRenderer.send('show-context-menu'),
   showPetQuickMenu: (payload) => ipcRenderer.send('pet-show-quick-menu', payload || {}),
-  startPetDrag: (screenX, screenY) => ipcRenderer.send('pet-drag-start', { screenX, screenY }),
+  startPetDrag: (screenX, screenY, visibleTopInsetPx) => ipcRenderer.send('pet-drag-start', { screenX, screenY, visibleTopInsetPx }),
   movePetDrag: (screenX, screenY) => ipcRenderer.send('pet-drag-move', { screenX, screenY }),
   endPetDrag: () => ipcRenderer.send('pet-drag-end'),
   openChatWindow: (payload) => ipcRenderer.invoke('chat-window-open', payload || {}),
@@ -22,11 +22,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setChatWindowOffset: (payload) => ipcRenderer.invoke('chat-window-set-offset', payload || {}),
   pinChatWindowToPet: (payload) => ipcRenderer.invoke('chat-window-pin-to-pet', payload || {}),
   openSettings: () => ipcRenderer.send('open-settings'),
+  openMemoryWindow: (payload) => ipcRenderer.invoke('memory-window-open', payload || {}),
 
   // App state
   getState: () => ipcRenderer.invoke('db-get-state'),
   saveCount: (count) => ipcRenderer.send('db-save-count', count),
   setCurrentChar: (charId) => ipcRenderer.send('db-set-char', charId),
+  getReachedMilestones: () => ipcRenderer.invoke('db-get-reached-milestones'),
+  saveReachedMilestone: (n) => ipcRenderer.send('db-save-reached-milestone', n),
 
   // Characters
   listCharacters: () => ipcRenderer.invoke('db-list-characters'),
@@ -45,8 +48,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resizePetWindow: (scale, options = {}) => ipcRenderer.invoke('pet-resize-window', { scale, persist: options.persist }),
   adjustPetScale: (delta) => ipcRenderer.invoke('pet-scale-adjust', { delta }),
   resetPetScale: () => ipcRenderer.invoke('pet-scale-reset'),
+  expandHudWidth: (w) => ipcRenderer.send('pet-hud-expand', w),
+  shrinkHudWidth: () => ipcRenderer.send('pet-hud-shrink'),
   getProfile: () => ipcRenderer.invoke('profile-get'),
   setProfile: (payload) => ipcRenderer.invoke('profile-set', payload),
+  getProfilePins: () => ipcRenderer.invoke('profile-pins-get'),
+  setProfilePins: (keys) => ipcRenderer.invoke('profile-pins-set', keys || []),
   listPromptCatalog: () => ipcRenderer.invoke('prompts-list'),
 
   // Chat + LLM + memory
@@ -62,10 +69,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopVoiceStream: (payload) => ipcRenderer.invoke('voice-stream-stop', payload || {}),
   cancelVoiceStream: (payload) => ipcRenderer.invoke('voice-stream-cancel', payload || {}),
   exportDocs: (payload) => ipcRenderer.invoke('export-docs', payload || {}),
-  getProactiveEnabled: () => ipcRenderer.invoke('proactive-enabled-get'),
-  setProactiveEnabled: (val) => ipcRenderer.invoke('proactive-enabled-set', val),
-  listMemories: (sessionId) => ipcRenderer.invoke('memory-list', sessionId),
+  listMemories: (payload) => ipcRenderer.invoke('memory-list', payload),
   deleteMemory: (id) => ipcRenderer.invoke('memory-delete', id),
+  getPendingMemoryConflict: () => ipcRenderer.invoke('memory-conflict-pending-get'),
+  getPendingMemoryConflictCount: () => ipcRenderer.invoke('memory-conflict-count-get'),
+  resolveMemoryConflict: (payload) => ipcRenderer.invoke('memory-conflict-resolve', payload || {}),
 
   // Events
   onForceSave: (callback) => onChannel('force-save', callback),
@@ -78,6 +86,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onVoiceStreamFinal: (callback) => onChannel('voice-stream-final', callback),
   onVoiceStreamError: (callback) => onChannel('voice-stream-error', callback),
   onChatReload: (callback) => onChannel('chat-reload', callback),
+  onMemoryConflictRefresh: (callback) => onChannel('memory-conflict-refresh', callback),
 })
 
 if (isE2E) {

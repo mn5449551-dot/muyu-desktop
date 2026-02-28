@@ -12,6 +12,7 @@ const IPC = Object.freeze({
   CHAT_WINDOW_SET_OFFSET: 'chat-window-set-offset',
   CHAT_WINDOW_PIN_TO_PET: 'chat-window-pin-to-pet',
   OPEN_SETTINGS: 'open-settings',
+  OPEN_MEMORY_WINDOW: 'memory-window-open',
   E2E_GET_RUNTIME_STATE: 'e2e-get-runtime-state',
   E2E_SWITCH_CHAR: 'e2e-switch-char',
   E2E_SET_MAIN_WINDOW_POSITION: 'e2e-set-main-window-position',
@@ -26,6 +27,8 @@ const IPC = Object.freeze({
   DB_GET_STATE: 'db-get-state',
   DB_SAVE_COUNT: 'db-save-count',
   DB_SET_CHAR: 'db-set-char',
+  DB_GET_REACHED_MILESTONES: 'db-get-reached-milestones',
+  DB_SAVE_REACHED_MILESTONE: 'db-save-reached-milestone',
 
   // Characters
   DB_LIST_CHARACTERS: 'db-list-characters',
@@ -44,8 +47,12 @@ const IPC = Object.freeze({
   PET_RESIZE_WINDOW: 'pet-resize-window',
   PET_SCALE_ADJUST: 'pet-scale-adjust',
   PET_SCALE_RESET: 'pet-scale-reset',
+  PET_HUD_EXPAND: 'pet-hud-expand',
+  PET_HUD_SHRINK: 'pet-hud-shrink',
   PROFILE_GET: 'profile-get',
   PROFILE_SET: 'profile-set',
+  PROFILE_PINS_GET: 'profile-pins-get',
+  PROFILE_PINS_SET: 'profile-pins-set',
   PROMPTS_LIST: 'prompts-list',
 
   // Chat / LLM / memory
@@ -64,11 +71,13 @@ const IPC = Object.freeze({
   VOICE_STREAM_FINAL: 'voice-stream-final',
   VOICE_STREAM_ERROR: 'voice-stream-error',
   EXPORT_DOCS: 'export-docs',
-  PROACTIVE_ENABLED_GET: 'proactive-enabled-get',
-  PROACTIVE_ENABLED_SET: 'proactive-enabled-set',
   CHAT_RELOAD: 'chat-reload',
   MEMORY_LIST: 'memory-list',
   MEMORY_DELETE: 'memory-delete',
+  MEMORY_CONFLICT_PENDING_GET: 'memory-conflict-pending-get',
+  MEMORY_CONFLICT_COUNT_GET: 'memory-conflict-count-get',
+  MEMORY_CONFLICT_RESOLVE: 'memory-conflict-resolve',
+  MEMORY_CONFLICT_REFRESH: 'memory-conflict-refresh',
 
   // Events (main -> renderer)
   FORCE_SAVE: 'force-save',

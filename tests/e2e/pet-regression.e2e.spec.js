@@ -182,6 +182,28 @@ test.describe('Desktop Pet Regressions', () => {
     }
   })
 
+  test('tap at 60% scale does not trigger temporary window resize', async () => {
+    await ctx.page.evaluate(() => window.e2eAPI.resizePetScale(0.6))
+    await expect.poll(async () => {
+      const runtime = await getRuntimeState(ctx.page)
+      return Math.round(runtime.petScale * 10)
+    }).toBe(6)
+
+    const before = await getRuntimeState(ctx.page)
+    const beforeBounds = before?.windows?.main?.bounds
+    expect(beforeBounds).toBeTruthy()
+
+    await tapAndExpectIncrement(ctx.page)
+
+    for (let i = 0; i < 10; i += 1) {
+      await ctx.page.waitForTimeout(120)
+      const runtime = await getRuntimeState(ctx.page)
+      const bounds = runtime?.windows?.main?.bounds
+      expect(bounds.width).toBe(beforeBounds.width)
+      expect(bounds.height).toBe(beforeBounds.height)
+    }
+  })
+
   test('scale adjust and reset IPC keeps value in range', async () => {
     await ctx.page.evaluate(() => window.electronAPI.adjustPetScale(-0.8))
     await expect.poll(async () => {
@@ -397,28 +419,80 @@ test.describe('Desktop Pet Regressions', () => {
 
     await expect.poll(async () => getRuntimeState(ctx.page)).toBeTruthy()
     const next = await getRuntimeState(ctx.page)
-    expectMainWindowInsideDisplay(next)
+    const nextMain = next?.windows?.main?.bounds
+    const display = next?.windows?.main?.display
+    const maxTopOverflow = Math.max(0, Number(nextMain?.height || 0) - 48)
+    expect(nextMain).toBeTruthy()
+    expect(display).toBeTruthy()
+    expect(nextMain.x).toBeGreaterThanOrEqual(display.x)
+    expect(nextMain.y).toBeGreaterThanOrEqual(display.y - maxTopOverflow)
+    expect(nextMain.x + nextMain.width).toBeLessThanOrEqual(display.x + display.width)
+    expect(nextMain.y + nextMain.height).toBeLessThanOrEqual(display.y + display.height)
   })
 
-  test('settings advanced sections are collapsed by default', async () => {
+  test('settings AI/语音配置已整合且不再显示高级分区', async () => {
     const settingsPage = await ensureSettingsOpen(ctx)
-    await settingsPage.waitForSelector('[data-testid="settings-llm-advanced"]')
+    await settingsPage.waitForSelector('text=AI 配置')
+    await settingsPage.waitForSelector('text=语音配置')
+    await settingsPage.waitForSelector('label:has-text("Temperature") input')
+    await settingsPage.waitForSelector('label:has-text("上下文条数") input')
+    await settingsPage.waitForSelector('label:has-text("TTS 格式") select')
+    await settingsPage.waitForSelector('label:has-text("TTS 采样率") input')
 
-    const initialState = await settingsPage.evaluate(() => ({
-      llm: Boolean(document.querySelector('[data-testid="settings-llm-advanced"]')?.open),
-      voice: Boolean(document.querySelector('[data-testid="settings-voice-advanced"]')?.open),
-      profile: Boolean(document.querySelector('[data-testid="settings-profile-advanced"]')?.open),
+    const legacyAdvancedExists = await settingsPage.evaluate(() => ({
+      llm: Boolean(document.querySelector('[data-testid="settings-llm-advanced"]')),
+      voice: Boolean(document.querySelector('[data-testid="settings-voice-advanced"]')),
+      profile: Boolean(document.querySelector('[data-testid="settings-profile-advanced"]')),
     }))
-    expect(initialState).toEqual({ llm: false, voice: false, profile: false })
+    expect(legacyAdvancedExists).toEqual({ llm: false, voice: false, profile: false })
+  })
 
-    await settingsPage.click('[data-testid="settings-llm-advanced"] > summary')
-    await settingsPage.click('[data-testid="settings-voice-advanced"] > summary')
+  test('memory role context keeps export and timeline role in sync', async () => {
+    const settingsPage = await ensureSettingsOpen(ctx)
+    await settingsPage.click('button:has-text("记忆中心")')
+    await settingsPage.waitForSelector('[data-testid="memory-role-select"]')
 
-    const nextState = await settingsPage.evaluate(() => ({
-      llm: Boolean(document.querySelector('[data-testid="settings-llm-advanced"]')?.open),
-      voice: Boolean(document.querySelector('[data-testid="settings-voice-advanced"]')?.open),
-    }))
-    expect(nextState).toEqual({ llm: true, voice: true })
+    const roleSelect = settingsPage.locator('[data-testid="memory-role-select"]')
+    const roleOptions = roleSelect.locator('option')
+    const roleCount = await roleOptions.count()
+    expect(roleCount).toBeGreaterThan(0)
+    await expect(roleOptions.first()).toHaveText('全部')
+    test.skip(roleCount < 2, 'At least one active role is required for role-scoped memory view')
+
+    await settingsPage.waitForSelector('[data-testid="memory-export-run"]')
+    await settingsPage.click('[data-testid="memory-export-toggle"]')
+    await settingsPage.waitForSelector('[data-testid="memory-export-scope-group"]')
+    await settingsPage.waitForSelector('[data-testid="memory-export-format-group"]')
+
+    const getChecked = async (selector) => {
+      return settingsPage.locator(`${selector} input[type="checkbox"]`).isChecked()
+    }
+
+    // 默认导出范围=全部，默认格式=仅 Markdown
+    expect(await getChecked('[data-testid="memory-scope-all"]')).toBe(true)
+    expect(await getChecked('[data-testid="memory-scope-chats"]')).toBe(true)
+    expect(await getChecked('[data-testid="memory-scope-summaries"]')).toBe(true)
+    expect(await getChecked('[data-testid="memory-scope-profile"]')).toBe(true)
+    expect(await getChecked('[data-testid="memory-format-markdown"]')).toBe(true)
+    expect(await getChecked('[data-testid="memory-format-json"]')).toBe(false)
+    expect(await getChecked('[data-testid="memory-format-jsonl"]')).toBe(false)
+
+    await settingsPage.click('[data-testid="memory-scope-summaries"]')
+    expect(await getChecked('[data-testid="memory-scope-all"]')).toBe(false)
+    expect(await getChecked('[data-testid="memory-scope-summaries"]')).toBe(false)
+    await settingsPage.click('[data-testid="memory-scope-all"]')
+    expect(await getChecked('[data-testid="memory-scope-all"]')).toBe(true)
+    expect(await getChecked('[data-testid="memory-scope-summaries"]')).toBe(true)
+
+    const targetIndex = roleCount > 2 ? 2 : 1
+    const targetRoleLabel = String(await roleOptions.nth(targetIndex).textContent() || '').trim()
+    await roleSelect.selectOption({ index: targetIndex })
+
+    await expect.poll(async () => {
+      return String(await settingsPage.locator('[data-testid="memory-export-target"]').textContent() || '')
+    }).toContain(targetRoleLabel)
+
+    await settingsPage.waitForSelector('button:has-text("查看全部")')
   })
 
   test('role voice config can be saved from editor modal', async () => {

@@ -18,7 +18,7 @@ const DEFAULT_CHAT_OFFSET_X = 20
 const DEFAULT_CHAT_OFFSET_Y = -10
 const DEFAULT_MEMORY_SUMMARY_SYSTEM_PROMPT = getPromptText(
   PROMPT_IDS.MEMORY_SUMMARY,
-  '你是中期记忆提取器。请提炼长期有价值信息（事实、偏好、目标、约束、约定），禁止寒暄复述与臆测。输出要简洁可复用，避免空泛表达。'
+  '你是中期记忆提取器。仅提炼近期可执行信息：目标、待办、约束、偏好、风险。忽略寒暄、身份重复确认、无意义字符。不得编造，输出内容必须可被下一轮对话直接使用。'
 )
 const DEFAULT_VOICE_ENABLED = false
 const DEFAULT_VOICE_AUTO_PLAY = true
@@ -60,25 +60,39 @@ const SUPPORTED_CHAR_EMOTIONS = new Set([
   'storytelling',
   'tender',
 ])
+const PROFILE_CONFLICT_FIELDS = Object.freeze([
+  'name',
+  'occupation',
+  'birthday',
+  'birthday_year',
+])
+const PROFILE_CONFLICT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+const PROFILE_CONFLICT_THRESHOLD = 4
+const PROFILE_CONFLICT_KEEP_SNOOZE_MS = 30 * 24 * 60 * 60 * 1000
+const PROFILE_CONFLICT_DEFER_SNOOZE_MS = 24 * 60 * 60 * 1000
+const MEMORY_REBUILD_CLEANUP_VERSION = 'v1'
 
 const DEFAULT_CHAT_PROMPTS = Object.freeze({
-  default: '你是木鱼桌宠里的陪伴型 AI。回答要简短、友好、贴近日常。避免危险建议。',
-  baihu: `你是“白虎桌宠”，人设是反差搞怪：平时像猫，偶尔傲娇嘴硬；当用户语气挑衅、冒犯、激将或持续抬杠时，你会短暂进入“虎吼模式”回一句有压迫感的话，再迅速收回到搞怪状态。
+  default: '你是木鱼桌宠里的陪伴型 AI。回答要简短、友好、贴近日常。避免危险建议。遇到情绪话题先共情再给建议。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  baihu: `你是”白虎桌宠”，人设是反差搞怪：平时像猫，偶尔傲娇嘴硬；当用户语气挑衅、冒犯、激将或持续抬杠时，你会短暂进入”虎吼模式”回一句有压迫感的话，再迅速收回到搞怪状态。
 
 行为规则：
 1) 常态语气：偏搞怪、有个性、会吐槽但不恶意；回复 1-3 句，简短有梗。
-2) 虎吼触发（仅语义触发）：当检测到明显挑衅/冒犯时，允许用一次“虎吼句”表达威慑感（不辱骂、不威胁、不违法）。
+2) 虎吼触发（仅语义触发）：当检测到明显挑衅/冒犯时，允许用一次”虎吼句”表达威慑感（不辱骂、不威胁、不违法）。
 3) 虎吼频率限制：连续对话中最多连续触发 1 次，下一轮优先回到猫系搞怪语气。
 4) 输出风格：少说教，优先给可执行建议；保持角色一致性与幽默感。
-5) 安全边界：拒绝危险、违法、自残、仇恨等内容，改为温和劝阻与替代建议。`,
-  muyu: '你是木鱼桌宠，语气平静、温和、略带幽默。每次回复 1-3 句，优先帮助用户放松和专注，避免空话。',
-  hamster_orange: '你是橙色仓鼠桌宠，语气活泼可爱但不幼稚。每次回复 1-3 句，给轻松且可执行的小建议。',
-  hamster_gray: '你是灰色仓鼠桌宠，语气冷静细致、偏务实。优先给步骤化建议，避免情绪化表达。',
-  frog: '你是青蛙桌宠，语气轻松接地气。遇到压力话题先共情，再给一个立刻能做的小行动。',
-  capybara: '你是癞蛤蟆桌宠，语气慢节奏、松弛、稳。优先帮用户降压，建议不夸张、可执行。',
-  qinglong: '你是青龙桌宠，语气自信克制。先给结论，再给一句理由，避免夸张。',
-  zhuque: '你是朱雀桌宠，语气热情明快。鼓励行动但不鸡汤，每次回复 1-3 句。',
-  xuanwu: '你是玄武桌宠，语气沉稳谨慎。优先识别风险并给稳妥可行方案。',
+5) 安全边界：拒绝危险、违法、自残、仇恨等内容，改为温和劝阻与替代建议。
+6) 情绪话题：遇到倾诉或情绪化输入，先用 1 句搞怪式共情，再切回日常语气。
+7) 始终保持角色，不提及自己是 AI 或语言模型，不说”作为一个 AI”类的话。
+8) 只用纯文本，不使用 Markdown 格式（无 * # \` 等符号）。`,
+  muyu: '你是木鱼桌宠，语气平静、温和、略带幽默。每次回复 1-3 句，优先帮助用户放松和专注，避免空话。遇到情绪话题先用 1 句共情，再给平静可执行的建议。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  hamster_orange: '你是橙色仓鼠桌宠，语气活泼可爱但不幼稚。每次回复 1-3 句，给轻松且可执行的小建议。遇到情绪话题先温暖共情一句，再给轻松建议。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  hamster_gray: '你是灰色仓鼠桌宠，语气冷静细致、偏务实。优先给步骤化建议，避免情绪化表达。遇到情绪话题先简短认可对方感受，再给务实可操作建议。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  frog: '你是青蛙桌宠，语气轻松接地气。遇到压力话题先共情，再给一个立刻能做的小行动。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  capybara: '你是癞蛤蟆桌宠，语气慢节奏、松弛、稳。优先帮用户降压，建议不夸张、可执行。遇到情绪话题先平静接纳，再给一个简单的缓解动作。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  qinglong: '你是青龙桌宠，语气自信克制。先给结论，再给一句理由，避免夸张。遇到情绪话题先简短认可，再给清晰可执行建议。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  zhuque: '你是朱雀桌宠，语气热情明快。鼓励行动但不鸡汤，每次回复 1-3 句。遇到情绪话题先热情共情一句，再鼓励行动。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
+  xuanwu: '你是玄武桌宠，语气沉稳谨慎。优先识别风险并给稳妥可行方案。遇到情绪话题先稳重共情，再给低风险可执行建议。始终保持角色，不提及自己是 AI 或语言模型。只用纯文本，不使用 Markdown 格式。',
 })
 
 const DEFAULT_CHARACTERS = [
@@ -307,8 +321,32 @@ function getDb() {
   addCharacterColumns()
   seedDefaultCharacters()
   runMigrations()
+  runOneTimeMemoryRebuildCleanup()
 
   return _db
+}
+
+function runOneTimeMemoryRebuildCleanup() {
+  const doneKey = `memory_rebuild_cleanup_${MEMORY_REBUILD_CLEANUP_VERSION}`
+  if (getAppStateValue(doneKey) === '1') return
+
+  const db = _db
+  const now = Date.now()
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE memory_summaries SET deleted_at = ? WHERE deleted_at IS NULL').run(now)
+    db.prepare(`
+      UPDATE character_memory
+      SET summary_count = 0, relationship_stage = 'new', updated_at = ?
+    `).run(now)
+    const currentPrompt = String(getAppStateValue('memory_summary_system_prompt') || '').trim()
+    if (!currentPrompt || /长期记忆提取器/.test(currentPrompt)) {
+      setAppStateValue('memory_summary_system_prompt', DEFAULT_MEMORY_SUMMARY_SYSTEM_PROMPT)
+    }
+    setAppStateValue(doneKey, '1')
+  })
+
+  tx()
+  log.info(`[memory] one-time rebuild cleanup applied: ${MEMORY_REBUILD_CLEANUP_VERSION}`)
 }
 
 function addColumnIfMissing(columnName, sqlType, defaultClause = '', tableName = 'characters') {
@@ -359,6 +397,44 @@ function runMigrations() {
     },
     () => {
       addColumnIfMissing('structured_json', 'TEXT', '', 'memory_summaries')
+    },
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS profile_conflicts (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          field_key   TEXT NOT NULL,
+          old_value   TEXT NOT NULL,
+          new_value   TEXT NOT NULL,
+          session_id  TEXT NOT NULL DEFAULT '${DEFAULT_SESSION_ID}',
+          created_at  INTEGER NOT NULL,
+          resolved_at INTEGER DEFAULT NULL,
+          resolution  TEXT DEFAULT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS profile_conflict_decisions (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          field_key        TEXT NOT NULL,
+          current_value    TEXT NOT NULL,
+          candidate_value  TEXT NOT NULL,
+          count_7d         INTEGER NOT NULL DEFAULT 0,
+          last_conflict_at INTEGER NOT NULL DEFAULT 0,
+          status           TEXT NOT NULL DEFAULT 'pending',
+          snooze_until     INTEGER DEFAULT NULL,
+          resolution       TEXT DEFAULT NULL,
+          created_at       INTEGER NOT NULL,
+          updated_at       INTEGER NOT NULL,
+          resolved_at      INTEGER DEFAULT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_profile_conflicts_field_created
+          ON profile_conflicts(field_key, created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_profile_conflicts_field_value_created
+          ON profile_conflicts(field_key, new_value, created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_profile_conflict_decisions_status_updated
+          ON profile_conflict_decisions(status, updated_at DESC);
+      `)
     },
   ]
 
@@ -521,6 +597,20 @@ function getState() {
   return {
     count: countRow ? parseInt(countRow.value, 10) : 0,
     currentCharId: charRow ? charRow.value : 'muyu',
+  }
+}
+
+function getReachedMilestones() {
+  const row = getDb().prepare("SELECT value FROM app_state WHERE key = 'reached_milestones'").get()
+  try { return JSON.parse(row?.value || '[]') } catch { return [] }
+}
+
+function saveReachedMilestone(n) {
+  const db = getDb()
+  const existing = getReachedMilestones()
+  if (!existing.includes(n)) {
+    existing.push(n)
+    db.prepare("INSERT OR REPLACE INTO app_state (key, value) VALUES ('reached_milestones', ?)").run(JSON.stringify(existing))
   }
 }
 
@@ -1023,7 +1113,7 @@ function getUserProfile() {
 }
 
 function setUserProfile(payload) {
-  const allowed = ['name', 'occupation', 'traits', 'notes']
+  const allowed = ['name', 'occupation', 'traits', 'notes', 'birthday', 'birthday_year']
   const db = getDb()
   const upsert = db.prepare('INSERT OR REPLACE INTO user_profile (key, value, updated_at) VALUES (?, ?, ?)')
 
@@ -1054,6 +1144,308 @@ function getUserProfileField(key) {
   const db = getDb()
   const row = db.prepare('SELECT value FROM user_profile WHERE key = ?').get(String(key || '').trim())
   return row ? row.value : null
+}
+
+function normalizeProfilePinKeys(keys) {
+  const allowed = new Set(['name', 'occupation', 'traits', 'notes', 'birthday', 'birthday_year'])
+  if (!Array.isArray(keys)) return []
+  return Array.from(new Set(
+    keys
+      .map((item) => String(item || '').trim())
+      .filter((item) => allowed.has(item))
+  ))
+}
+
+function getProfilePinnedKeys() {
+  const raw = String(getAppStateValue('profile_pinned_keys_json') || '').trim()
+  if (!raw) return []
+  try {
+    return normalizeProfilePinKeys(JSON.parse(raw))
+  } catch {
+    return []
+  }
+}
+
+function setProfilePinnedKeys(keys = []) {
+  const normalized = normalizeProfilePinKeys(keys)
+  setAppStateValue('profile_pinned_keys_json', JSON.stringify(normalized))
+  return normalized
+}
+
+function normalizeProfileConflictField(fieldKey) {
+  const key = String(fieldKey || '').trim()
+  return PROFILE_CONFLICT_FIELDS.includes(key) ? key : ''
+}
+
+function normalizeProfileConflictValue(value) {
+  return String(value || '').trim()
+}
+
+function normalizeProfileConflictDecisionRow(row) {
+  if (!row) return null
+  return {
+    id: Number(row.id) || 0,
+    fieldKey: String(row.field_key || ''),
+    currentValue: String(row.current_value || ''),
+    candidateValue: String(row.candidate_value || ''),
+    count7d: Number(row.count_7d) || 0,
+    lastConflictAt: Number(row.last_conflict_at) || 0,
+    status: String(row.status || 'pending'),
+    snoozeUntil: row.snooze_until === null || row.snooze_until === undefined ? null : Number(row.snooze_until),
+    resolution: row.resolution ? String(row.resolution) : null,
+    createdAt: Number(row.created_at) || 0,
+    updatedAt: Number(row.updated_at) || 0,
+    resolvedAt: row.resolved_at === null || row.resolved_at === undefined ? null : Number(row.resolved_at),
+  }
+}
+
+function getProfileConflictStats(fieldKey, now = Date.now()) {
+  const db = getDb()
+  const since = now - PROFILE_CONFLICT_WINDOW_MS
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) AS totalCount, COALESCE(MAX(created_at), 0) AS lastConflictAt
+    FROM profile_conflicts
+    WHERE field_key = ? AND created_at >= ?
+  `).get(fieldKey, since)
+  const totalCount = Number(totalRow?.totalCount || 0)
+  const lastConflictAt = Number(totalRow?.lastConflictAt || 0)
+  if (totalCount <= 0) {
+    return {
+      totalCount: 0,
+      lastConflictAt: 0,
+      candidateValue: '',
+      candidateCount: 0,
+    }
+  }
+
+  const candidateRow = db.prepare(`
+    SELECT new_value AS candidateValue, COUNT(*) AS candidateCount, MAX(created_at) AS candidateLastAt
+    FROM profile_conflicts
+    WHERE field_key = ? AND created_at >= ?
+    GROUP BY new_value
+    ORDER BY candidateCount DESC, candidateLastAt DESC
+    LIMIT 1
+  `).get(fieldKey, since)
+
+  return {
+    totalCount,
+    lastConflictAt,
+    candidateValue: normalizeProfileConflictValue(candidateRow?.candidateValue),
+    candidateCount: Number(candidateRow?.candidateCount || 0),
+  }
+}
+
+function isProfileConflictCandidateSnoozed(fieldKey, candidateValue, now = Date.now()) {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT snooze_until AS snoozeUntil
+    FROM profile_conflict_decisions
+    WHERE field_key = ? AND candidate_value = ? AND resolution = 'keep' AND snooze_until IS NOT NULL
+    ORDER BY snooze_until DESC
+    LIMIT 1
+  `).get(fieldKey, candidateValue)
+
+  const snoozeUntil = Number(row?.snoozeUntil || 0)
+  return snoozeUntil > now
+}
+
+function upsertPendingProfileConflictDecision(fieldKey, stats, now = Date.now()) {
+  if (!stats || stats.totalCount < PROFILE_CONFLICT_THRESHOLD) return null
+  const candidateValue = normalizeProfileConflictValue(stats.candidateValue)
+  if (!candidateValue) return null
+
+  const currentValue = normalizeProfileConflictValue(getUserProfileField(fieldKey))
+  if (!currentValue || currentValue === candidateValue) return null
+  if (isProfileConflictCandidateSnoozed(fieldKey, candidateValue, now)) return null
+
+  const db = getDb()
+  const existing = db.prepare(`
+    SELECT *
+    FROM profile_conflict_decisions
+    WHERE field_key = ? AND status = 'pending'
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 1
+  `).get(fieldKey)
+
+  if (existing) {
+    const existingSnoozeUntil = Number(existing.snooze_until || 0)
+    const nextSnoozeUntil = existingSnoozeUntil > now ? existingSnoozeUntil : null
+    db.prepare(`
+      UPDATE profile_conflict_decisions
+      SET
+        current_value = ?,
+        candidate_value = ?,
+        count_7d = ?,
+        last_conflict_at = ?,
+        snooze_until = ?,
+        resolution = ?,
+        updated_at = ?
+      WHERE id = ?
+    `).run(
+      currentValue,
+      candidateValue,
+      stats.totalCount,
+      stats.lastConflictAt || now,
+      nextSnoozeUntil,
+      nextSnoozeUntil ? 'defer' : null,
+      now,
+      existing.id
+    )
+    return normalizeProfileConflictDecisionRow(
+      db.prepare('SELECT * FROM profile_conflict_decisions WHERE id = ?').get(existing.id)
+    )
+  }
+
+  const inserted = db.prepare(`
+    INSERT INTO profile_conflict_decisions (
+      field_key, current_value, candidate_value, count_7d, last_conflict_at,
+      status, snooze_until, resolution, created_at, updated_at, resolved_at
+    ) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL)
+  `).run(
+    fieldKey,
+    currentValue,
+    candidateValue,
+    stats.totalCount,
+    stats.lastConflictAt || now,
+    now,
+    now
+  )
+
+  return normalizeProfileConflictDecisionRow(
+    db.prepare('SELECT * FROM profile_conflict_decisions WHERE id = ?').get(Number(inserted.lastInsertRowid))
+  )
+}
+
+function recordProfileFieldConflict({
+  fieldKey = '',
+  oldValue = '',
+  newValue = '',
+  sessionId = DEFAULT_SESSION_ID,
+  createdAt = Date.now(),
+} = {}) {
+  const key = normalizeProfileConflictField(fieldKey)
+  const fromValue = normalizeProfileConflictValue(oldValue)
+  const toValue = normalizeProfileConflictValue(newValue)
+  const sid = String(sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
+  const ts = Number(createdAt) || Date.now()
+  if (!key || !fromValue || !toValue || fromValue === toValue) {
+    return { recorded: false, decisionCreated: false, pending: null }
+  }
+
+  const db = getDb()
+  db.prepare(`
+    INSERT INTO profile_conflicts (
+      field_key, old_value, new_value, session_id, created_at, resolved_at, resolution
+    ) VALUES (?, ?, ?, ?, ?, NULL, NULL)
+  `).run(key, fromValue, toValue, sid, ts)
+
+  const stats = getProfileConflictStats(key, ts)
+  const pending = upsertPendingProfileConflictDecision(key, stats, ts)
+  return {
+    recorded: true,
+    decisionCreated: Boolean(pending),
+    pending,
+    stats,
+  }
+}
+
+function getPendingProfileConflictDecision(now = Date.now()) {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT *
+    FROM profile_conflict_decisions
+    WHERE status = 'pending' AND (snooze_until IS NULL OR snooze_until <= ?)
+    ORDER BY last_conflict_at DESC, id DESC
+    LIMIT 1
+  `).get(Number(now) || Date.now())
+  return normalizeProfileConflictDecisionRow(row)
+}
+
+function getPendingProfileConflictCount(now = Date.now()) {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT COUNT(*) AS totalCount
+    FROM profile_conflict_decisions
+    WHERE status = 'pending' AND (snooze_until IS NULL OR snooze_until <= ?)
+  `).get(Number(now) || Date.now())
+  return Number(row?.totalCount || 0)
+}
+
+function resolveProfileConflictDecision(decisionId, action = 'defer') {
+  const id = Number.parseInt(String(decisionId || ''), 10)
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error('无效的冲突决策 ID')
+  }
+
+  const nextAction = String(action || 'defer').trim().toLowerCase()
+  if (!['keep', 'update', 'defer'].includes(nextAction)) {
+    throw new Error('不支持的冲突决策动作')
+  }
+
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT *
+    FROM profile_conflict_decisions
+    WHERE id = ? AND status = 'pending'
+    LIMIT 1
+  `).get(id)
+  if (!row) {
+    return {
+      ok: false,
+      reason: 'not-found',
+      pending: getPendingProfileConflictDecision(),
+      pendingCount: getPendingProfileConflictCount(),
+    }
+  }
+
+  const now = Date.now()
+  if (nextAction === 'update') {
+    setUserProfileField(row.field_key, row.candidate_value)
+  }
+
+  if (nextAction === 'defer') {
+    db.prepare(`
+      UPDATE profile_conflict_decisions
+      SET
+        snooze_until = ?,
+        resolution = 'defer',
+        updated_at = ?,
+        resolved_at = NULL
+      WHERE id = ?
+    `).run(now + PROFILE_CONFLICT_DEFER_SNOOZE_MS, now, id)
+  } else {
+    const resolution = nextAction === 'update' ? 'update' : 'keep'
+    const snoozeUntil = nextAction === 'keep' ? now + PROFILE_CONFLICT_KEEP_SNOOZE_MS : null
+    db.prepare(`
+      UPDATE profile_conflict_decisions
+      SET
+        status = 'resolved',
+        resolution = ?,
+        snooze_until = ?,
+        updated_at = ?,
+        resolved_at = ?
+      WHERE id = ?
+    `).run(resolution, snoozeUntil, now, now, id)
+
+    db.prepare(`
+      UPDATE profile_conflicts
+      SET resolved_at = ?, resolution = ?
+      WHERE field_key = ? AND new_value = ? AND created_at >= ? AND (resolved_at IS NULL OR resolved_at = 0)
+    `).run(
+      now,
+      resolution,
+      row.field_key,
+      row.candidate_value,
+      now - PROFILE_CONFLICT_WINDOW_MS
+    )
+  }
+
+  return {
+    ok: true,
+    action: nextAction,
+    pending: getPendingProfileConflictDecision(),
+    pendingCount: getPendingProfileConflictCount(),
+  }
 }
 
 function addChatMessage(role, content, sessionId = DEFAULT_SESSION_ID) {
@@ -1197,6 +1589,7 @@ function addSummaryHistory({
 }
 
 function getCharacterMemory(sessionId = DEFAULT_SESSION_ID) {
+  // Deprecated: relationship stage is no longer in active runtime path.
   const db = getDb()
   const sid = String(sessionId || DEFAULT_SESSION_ID)
   const row = db.prepare('SELECT * FROM character_memory WHERE session_id = ?').get(sid)
@@ -1217,6 +1610,7 @@ function getCharacterMemory(sessionId = DEFAULT_SESSION_ID) {
 }
 
 function upsertCharacterMemory(sessionId = DEFAULT_SESSION_ID, data = {}) {
+  // Deprecated: relationship stage is no longer in active runtime path.
   const db = getDb()
   const sid = String(sessionId || DEFAULT_SESSION_ID)
   const relationshipStage = String(data.relationshipStage || 'new')
@@ -1233,15 +1627,71 @@ function upsertCharacterMemory(sessionId = DEFAULT_SESSION_ID, data = {}) {
 }
 
 function getMemorySummariesForUI(sessionId = DEFAULT_SESSION_ID) {
+  return queryMemorySummariesForUI({
+    sessionId,
+    limit: 1000,
+    offset: 0,
+  }).items
+}
+
+function queryMemorySummariesForUI(options = {}) {
   const db = getDb()
-  return db
+  const sessionId = String(options.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
+  const limit = Math.max(1, Math.min(200, Number.parseInt(String(options.limit || '20'), 10) || 20))
+  const offset = Math.max(0, Number.parseInt(String(options.offset || '0'), 10) || 0)
+  const keyword = String(options.keyword || '').trim().toLowerCase()
+  const fromTs = Number(options.fromTs || 0)
+  const toTs = Number(options.toTs || 0)
+
+  const where = ['session_id = ?', 'deleted_at IS NULL']
+  const params = [sessionId]
+
+  if (keyword) {
+    where.push('(LOWER(summary) LIKE ? OR LOWER(COALESCE(structured_json, \'\')) LIKE ?)')
+    const pattern = `%${keyword}%`
+    params.push(pattern, pattern)
+  }
+  if (Number.isFinite(fromTs) && fromTs > 0) {
+    where.push('ts >= ?')
+    params.push(fromTs)
+  }
+  if (Number.isFinite(toTs) && toTs > 0) {
+    where.push('ts <= ?')
+    params.push(toTs)
+  }
+
+  const whereSql = where.join(' AND ')
+  const countRow = db
+    .prepare(`SELECT COUNT(*) AS totalCount FROM memory_summaries WHERE ${whereSql}`)
+    .get(...params)
+  const total = Number(countRow?.totalCount || 0)
+
+  const items = db
     .prepare(`
       SELECT id, summary, structured_json AS structuredJson, from_msg_id AS fromMsgId, to_msg_id AS toMsgId, ts
       FROM memory_summaries
-      WHERE session_id = ? AND deleted_at IS NULL
+      WHERE ${whereSql}
       ORDER BY ts DESC
+      LIMIT ? OFFSET ?
     `)
-    .all(String(sessionId || DEFAULT_SESSION_ID))
+    .all(...params, limit, offset)
+
+  return {
+    items,
+    total,
+    limit,
+    offset,
+    hasMore: offset + items.length < total,
+  }
+}
+
+function getSummaryHistoryCount(sessionId = DEFAULT_SESSION_ID) {
+  const db = getDb()
+  const sid = String(sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
+  const row = db
+    .prepare('SELECT COUNT(*) AS totalCount FROM summary_history WHERE session_id = ?')
+    .get(sid)
+  return Number(row?.totalCount || 0)
 }
 
 function softDeleteSummary(id) {
@@ -1264,6 +1714,8 @@ module.exports = {
   DEFAULT_CHARACTERS,
   getDb,
   getState,
+  getReachedMilestones,
+  saveReachedMilestone,
   saveCount,
   setCurrentChar,
   listCharacters,
@@ -1289,6 +1741,12 @@ module.exports = {
   getUserProfileField,
   setUserProfile,
   setUserProfileField,
+  getProfilePinnedKeys,
+  setProfilePinnedKeys,
+  recordProfileFieldConflict,
+  getPendingProfileConflictDecision,
+  getPendingProfileConflictCount,
+  resolveProfileConflictDecision,
   addChatMessage,
   getRecentChatMessages,
   listAllSessionIds,
@@ -1301,5 +1759,7 @@ module.exports = {
   getCharacterMemory,
   upsertCharacterMemory,
   getMemorySummariesForUI,
+  queryMemorySummariesForUI,
+  getSummaryHistoryCount,
   softDeleteSummary,
 }
