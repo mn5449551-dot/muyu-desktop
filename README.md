@@ -121,7 +121,6 @@ Release pipeline is defined in:
 - [Latest Release Page](https://github.com/mn5449551-dot/muyu-desktop/releases/latest)
 - Direct download (Windows x64): [muyu-desktop-win-x64.zip](https://github.com/mn5449551-dot/muyu-desktop/releases/latest/download/muyu-desktop-win-x64.zip)
 - Direct download (macOS Apple Silicon): [muyu-desktop-mac-arm64.dmg](https://github.com/mn5449551-dot/muyu-desktop/releases/latest/download/muyu-desktop-mac-arm64.dmg)
-- Direct download (macOS Intel): [muyu-desktop-mac-x64.dmg](https://github.com/mn5449551-dot/muyu-desktop/releases/latest/download/muyu-desktop-mac-x64.dmg)
 
 Trigger:
 
