@@ -127,22 +127,6 @@ git push origin v0.1.5
 - `assets/`：静态资源
 - `tests/e2e/`：E2E 回归
 
-## GitHub 上传建议
-
-建议上传：
-
-- `src/`、`tests/`、`assets/`
-- `package.json`、`package-lock.json`、`vite.config.js`、`playwright.e2e.config.js`
-- `README.md`、`docs/`
-
-不要上传：
-
-- `dist/`、`dist-electron/`
-- `node_modules/`
-- `artifacts/`、`test-results/`
-- `.env*`
-- `*.db`、`*.sqlite`、`*.sqlite3`
-
 ## 常见问题
 
 - 原生模块加载失败（`better-sqlite3`）
