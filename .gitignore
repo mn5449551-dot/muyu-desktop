@@ -23,3 +23,10 @@ AGENTS.md
 CLAUDE.md
 规划文档.md
 docs/voice-plan.md
+
+# Keep only Doubao voice model docs in repo
+docs/*
+!docs/豆包语音合成大模型文档/
+!docs/豆包语音合成大模型文档/**
+!docs/豆包语音识别大模型文档/
+!docs/豆包语音识别大模型文档/**

@@ -116,8 +116,6 @@ git push origin v0.1.5
 - `windows-latest` 构建 `.zip`
 - 自动上传到对应 tag 的 GitHub Release
 
-详细流程见：`docs/release.md`
-
 ## 目录结构
 
 - `src/main/`：主进程、IPC、数据库、服务
