@@ -1,32 +1,39 @@
-# muyu-desktop
+# 木鱼桌宠（muyu-desktop）
 
-一个基于 Electron 的桌面木鱼宠物应用，支持聊天、语音输入输出、角色切换、记忆摘要与数据导出。
+一个基于 Electron 的桌面宠物应用：可互动、可聊天、可语音输入输出，并支持记忆摘要与聊天数据导出。
 
-## 平台支持
+## 适用平台
 
-- macOS：`dmg` 安装包
-- Windows：`zip` 便携包
-- iOS：当前仓库不支持（本项目是 Electron 桌面应用）
+- macOS：`.dmg` 安装包（当前 Release 提供 Apple Silicon）
+- Windows：`.zip` 便携包（x64）
+- iOS：不支持（本仓库是桌面端 Electron 项目）
 
-## 项目功能
+## 下载与安装
 
-`muyu-desktop` 提供以下能力：
+- 最新发布页：[Releases / latest](https://github.com/mn5449551-dot/muyu-desktop/releases/latest)
+- Windows 下载：[muyu-desktop-win-x64.zip](https://github.com/mn5449551-dot/muyu-desktop/releases/latest/download/muyu-desktop-win-x64.zip)
+- macOS 下载：[muyu-desktop-mac-arm64.dmg](https://github.com/mn5449551-dot/muyu-desktop/releases/latest/download/muyu-desktop-mac-arm64.dmg)
 
-- 可悬浮的桌宠窗口与点击互动
-- 按角色隔离的聊天会话窗口
-- 语音输入（流式/文件 ASR）与语音播放（TTS）
-- 长期记忆摘要与人设冲突处理
+说明：
+
+- 当前仓库为 `Private`，下载 Release 需要先登录有权限的 GitHub 账号。
+- Windows 目前提供便携版 zip（非安装向导）。
+
+## 功能概览
+
+- 悬浮桌宠窗口与点击互动
+- 独立聊天窗口（按角色隔离会话）
+- 语音输入（ASR）与语音播报（TTS）
+- 长期记忆摘要与档案冲突处理
 - 设置面板与记忆管理面板
-- 聊天/摘要/人设导出为 Markdown、JSON、JSONL
+- 聊天/摘要/档案导出：Markdown、JSON、JSONL
 
-## 快速开始
+## 3 分钟本地跑起来
 
 环境要求：
 
-- Node.js 与 npm
-- macOS 或 Windows（用于本地开发与打包）
-
-安装并运行：
+- Node.js + npm
+- macOS 或 Windows
 
 ```bash
 npm install
@@ -36,53 +43,33 @@ npm run dev
 
 说明：
 
-- `npm run rebuild-native`：当 Electron 或 Node 运行时版本变化后，需要重新编译 `better-sqlite3`。
-- `npm run dev`：会同时启动 Vite 与 Electron。
+- `npm run dev` 会同时启动 Vite 与 Electron。
+- 当 Electron/Node 版本变化后，需要重新执行 `npm run rebuild-native`（`better-sqlite3` 原生模块重编译）。
 
-## 常用脚本
+## 常用命令
 
-- `npm run dev`：同时启动渲染进程（Vite）与 Electron
-- `npm run start:vite`：仅启动渲染进程开发服务（`http://localhost:5173`）
-- `npm run start:electron`：在已有 Vite 服务时启动 Electron
+- `npm run dev`：启动开发环境（Vite + Electron）
+- `npm run start:vite`：仅启动渲染进程（`http://localhost:5173`）
+- `npm run start:electron`：连接已启动的 Vite 服务启动 Electron
 - `npm run build:renderer`：构建渲染资源到 `dist/renderer`
-- `npm run build:mac`：打包 macOS `dmg` 到 `dist-electron`
-- `npm run build:win`：打包 Windows `zip` 到 `dist-electron`
-- `npm run build`：构建渲染资源并打包桌面应用
-- `npm run release:check`：发布前快速检查（`build:renderer` + 定向 e2e）
-- `npm run rebuild-native`：为当前 Electron 运行时重编译 `better-sqlite3`
-- `npm run test:e2e`：运行 Playwright Electron 回归测试
-- `npm run test:e2e:debug`：以 `PWDEBUG=1` 调试运行 e2e
+- `npm run build:mac`：打包 macOS `dmg`
+- `npm run build:win`：打包 Windows `zip`
+- `npm run build`：完整打包
+- `npm run test:e2e`：执行 Playwright 回归
+- `npm run test:e2e:debug`：调试模式执行 e2e
+- `npm run release:check`：发布前快速检查（定向回归）
 
-## 目录结构
+## API Key 配置（火山引擎）
 
-- `src/main/`：Electron 主进程、IPC 处理、数据库、服务模块
-- `src/renderer/`：React 界面（桌宠/聊天/设置/记忆）
-- `src/shared/`：主进程与渲染进程共享的 IPC 常量
-- `src/utils/`：共享工具函数
-- `assets/`：打包进应用的图片与音频资源
-- `tests/e2e/`：Playwright Electron 回归测试
-- `dist/renderer/`：渲染进程生产构建输出
-- `dist-electron/`：桌面安装包输出
+默认能力：
 
-## 数据与安全
+- LLM（方舟）：`https://ark.cn-beijing.volces.com/api/v3/chat/completions`
+- 语音（豆包）：ASR + TTS
 
-- 应用数据存储在 `app.getPath('userData')`
-- macOS 常见路径：`~/Library/Application Support/muyu-desktop/`
-- SQLite 数据库文件：用户目录下的 `muyu.db`
-- API Key / Token 使用 Electron `safeStorage` 加密保存
-- 导出文件（`.md`、`.json`、`.jsonl`）包含用户数据，应按敏感数据处理
-
-## API Key 获取与配置（火山引擎）
-
-本项目默认使用火山能力：
-
-- LLM（方舟）接口：`https://ark.cn-beijing.volces.com/api/v3/chat/completions`
-- 语音（ASR/TTS）接口：豆包语音
-
-官方入口：
+官方文档入口：
 
 - 方舟控制台（LLM API Key）：`https://console.volcengine.com/ark`
-- 豆包语音快速入门（AppID/Access Token）：`https://www.volcengine.com/docs/6561/2119699`
+- 豆包语音快速入门（AppID / Access Token）：`https://www.volcengine.com/docs/6561/2119699`
 - 音色列表（`voice_type` / `emotion`）：`https://www.volcengine.com/docs/6561/1257544`
 - TTS V3 文档：`https://www.volcengine.com/docs/6561/1598757`
 - ASR 流式文档：`https://www.volcengine.com/docs/6561/1354869`
@@ -90,84 +77,88 @@ npm run dev
 应用内配置步骤：
 
 1. 打开设置面板。
-2. 在 AI 配置中填写 LLM API Key（以及 Base URL/Model）。
+2. 在 AI 配置中填写 `API Key`（及 Base URL/Model）。
 3. 在语音配置中填写 `AppID`、`Access Token`、`ASR 资源 ID`、`TTS 资源 ID`。
-4. 点击“保存”，再执行“测试连通”。
+4. 点击保存并执行连接测试。
 
-注意事项：
+安全提醒：
 
-- 不要把真实 API Key / Token 提交到 GitHub。
-- 本地存储会通过 Electron `safeStorage` 加密。
+- 不要把真实密钥提交到 GitHub。
+- 本地密钥使用 Electron `safeStorage` 加密保存。
 
 ## 测试
-
-主要回归测试：
 
 ```bash
 npm run test:e2e
 ```
 
-Playwright 相关配置：
-
-- 配置文件：`playwright.e2e.config.js`
+- Playwright 配置：`playwright.e2e.config.js`
 - 报告目录：`artifacts/e2e/report`
 - 测试产物：`artifacts/e2e/test-results`
 
-## 发布（GitHub）
+## 发布（GitHub Actions）
 
-发布流水线位置：
-
-- `.github/workflows/release.yml`
-- [最新 Release 页面](https://github.com/mn5449551-dot/muyu-desktop/releases/latest)
-- Windows x64 直链：[muyu-desktop-win-x64.zip](https://github.com/mn5449551-dot/muyu-desktop/releases/latest/download/muyu-desktop-win-x64.zip)
-- macOS Apple Silicon 直链：[muyu-desktop-mac-arm64.dmg](https://github.com/mn5449551-dot/muyu-desktop/releases/latest/download/muyu-desktop-mac-arm64.dmg)
+发布流水线：`.github/workflows/release.yml`
 
 触发方式：
 
-- 推送标签，例如 `v0.1.0`
+1. 提交并推送代码到 `main`
+2. 打标签并推送，例如：
+
+```bash
+git tag v0.1.5
+git push origin v0.1.5
+```
 
 流水线行为：
 
-- 在 `macos-latest` 构建 macOS 安装包（`.dmg`）
-- 在 `windows-latest` 构建 Windows 压缩包（`.zip`）
-- 将产物上传到对应 tag 的 GitHub Release
+- `macos-latest` 构建 `.dmg`
+- `windows-latest` 构建 `.zip`
+- 自动上传到对应 tag 的 GitHub Release
 
-详细发布步骤见：
+详细流程见：`docs/release.md`
 
-- `docs/release.md`
+## 目录结构
 
-## GitHub 应上传与不上传
+- `src/main/`：主进程、IPC、数据库、服务
+- `src/renderer/`：React 界面（桌宠/聊天/设置/记忆）
+- `src/shared/`：共享 IPC 常量
+- `src/utils/`：工具函数
+- `assets/`：静态资源
+- `tests/e2e/`：E2E 回归
+
+## GitHub 上传建议
 
 建议上传：
 
-- 源码：`src/`、`tests/`、`assets/`
-- 构建配置：`package.json`、`package-lock.json`、`vite.config.js`、`playwright.e2e.config.js`
-- 文档：`README.md`、`docs/`
+- `src/`、`tests/`、`assets/`
+- `package.json`、`package-lock.json`、`vite.config.js`、`playwright.e2e.config.js`
+- `README.md`、`docs/`
 
 不要上传：
 
-- 构建产物：`dist/`、`dist-electron/`
-- 依赖目录：`node_modules/`
-- 测试产物：`artifacts/`、`test-results/`
-- 本地密钥与环境变量文件：`.env*`
-- 本地数据库：`*.db`、`*.sqlite`、`*.sqlite3`
+- `dist/`、`dist-electron/`
+- `node_modules/`
+- `artifacts/`、`test-results/`
+- `.env*`
+- `*.db`、`*.sqlite`、`*.sqlite3`
 
-## 故障排查
+## 常见问题
 
-- 原生模块版本不匹配（`better-sqlite3` 加载报错）：
+- 原生模块加载失败（`better-sqlite3`）
   - 执行 `npm run rebuild-native`
-- Electron 启动但渲染页面空白：
-  - 确认 `npm run start:vite` 已运行，地址为 `http://localhost:5173`
-- 语音/聊天请求因凭据失败：
-  - 在设置面板补全 LLM 与语音配置
+- Electron 启动但界面空白
+  - 确认 `npm run start:vite` 在 `http://localhost:5173` 运行
+- 聊天/语音请求失败
+  - 检查设置中的 LLM 与语音凭据配置
 
-## 开发说明
+## 开发约定
 
-- 主进程使用 CommonJS（`require/module.exports`）
-- 渲染进程使用 ESM + React
-- 如新增 IPC，请同步以下三个文件：
+- 主进程：CommonJS（`require/module.exports`）
+- 渲染进程：ESM + React
+- 新增 IPC 时同步修改：
   - `src/shared/ipc-channels.js`
   - `src/main/main.js`
   - `src/main/preload.js`
 
-最后更新时间：2026-02-28
+最后更新：2026-03-01
