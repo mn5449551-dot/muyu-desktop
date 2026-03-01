@@ -22,14 +22,24 @@
 ### macOS 安装步骤（DMG）
 
 1. 在 Release 页面下载 `muyu-desktop-mac-arm64.dmg`。
+
+![步骤 1：下载 DMG](assets/readme/step1.png)
+
 2. 双击打开 DMG，把 `木鱼桌宠.app` 拖到 `Applications`。
+
+![步骤 2：拖入 Applications 安装](assets/readme/step2.png)
+
 3. 打开终端执行：
 
 ```bash
 xattr -cr "/Applications/木鱼桌宠.app"
 ```
 
+![步骤 3：终端执行 xattr 命令](assets/readme/step3.png)
+
 4. 再打开应用（建议首次使用“右键 -> 打开”）。
+
+![步骤 4：安装后进入设置页面](assets/readme/step4.png)
 
 第 3 步说明（简版）：
 
