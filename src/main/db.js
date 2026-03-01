@@ -1,5 +1,7 @@
 const Database = require('better-sqlite3')
+const fs = require('fs')
 const path = require('path')
+const { fileURLToPath, pathToFileURL } = require('url')
 const { app, safeStorage } = require('electron')
 const log = require('./logger')
 const { PROMPT_IDS, getPromptText } = require('./prompts/prompt-catalog')
@@ -557,8 +559,71 @@ function parseRarePool(value, fallback = []) {
   }
 }
 
+function normalizeStoredMediaPath(value = '') {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:') || raw.startsWith('blob:')) {
+    return raw
+  }
+  if (raw.startsWith('file://')) return raw
+
+  if (path.isAbsolute(raw)) {
+    try {
+      return pathToFileURL(raw).href
+    } catch {
+      return raw
+    }
+  }
+
+  const slashPath = raw.replace(/\\/g, '/')
+  if (slashPath.startsWith('./images/') || slashPath.startsWith('./audio/')) return slashPath.slice(2)
+  if (slashPath.startsWith('assets/images/') || slashPath.startsWith('assets/audio/')) return slashPath.slice('assets/'.length)
+  return slashPath
+}
+
+function getLocalFilePathFromMediaPath(mediaPath = '') {
+  const normalized = normalizeStoredMediaPath(mediaPath)
+  if (!normalized) return ''
+  if (normalized.startsWith('file://')) {
+    try {
+      return fileURLToPath(normalized)
+    } catch {
+      return ''
+    }
+  }
+  return ''
+}
+
+function isMediaPathAvailable(mediaPath = '') {
+  const normalized = normalizeStoredMediaPath(mediaPath)
+  if (!normalized) return false
+
+  const localPath = getLocalFilePathFromMediaPath(normalized)
+  if (localPath) {
+    try {
+      return fs.existsSync(localPath)
+    } catch {
+      return false
+    }
+  }
+
+  return true
+}
+
+function sanitizeMediaPath(value, fallback = '') {
+  const normalized = normalizeStoredMediaPath(value)
+  if (isMediaPathAvailable(normalized)) return normalized
+  return normalizeStoredMediaPath(fallback)
+}
+
 function normalizeCharacterRow(row) {
   const fallback = DEFAULT_CHAR_MAP.get(row.id) || {}
+  const normalizedRarePool = parseRarePool(row.rare_audio_pool_json, fallback.rareAudioPool || [])
+    .map((item) => sanitizeMediaPath(item, ''))
+    .filter(Boolean)
+  const fallbackRarePool = (fallback.rareAudioPool || [])
+    .map((item) => sanitizeMediaPath(item, ''))
+    .filter(Boolean)
 
   return {
     id: row.id,
@@ -566,11 +631,11 @@ function normalizeCharacterRow(row) {
     animationType: row.animation_type || fallback.animationType || 'static',
     isActive: row.is_active === 1,
     sortOrder: Number.isFinite(row.sort_order) ? row.sort_order : (fallback.sortOrder || 0),
-    idleImg: row.idle_img || fallback.idleImg || '',
-    hitImg: row.hit_img || fallback.hitImg || '',
-    mainAudio: row.main_audio || fallback.mainAudio || '',
-    rareAudio: row.rare_audio || fallback.rareAudio || '',
-    rareAudioPool: parseRarePool(row.rare_audio_pool_json, fallback.rareAudioPool || []),
+    idleImg: sanitizeMediaPath(row.idle_img, fallback.idleImg || ''),
+    hitImg: sanitizeMediaPath(row.hit_img, fallback.hitImg || ''),
+    mainAudio: sanitizeMediaPath(row.main_audio, fallback.mainAudio || ''),
+    rareAudio: sanitizeMediaPath(row.rare_audio, fallback.rareAudio || ''),
+    rareAudioPool: normalizedRarePool.length > 0 ? normalizedRarePool : fallbackRarePool,
     chatSystemPrompt: row.chat_system_prompt || getDefaultChatPromptForId(row.id),
     floatTextColor: row.float_text_color || fallback.floatTextColor || '#FF4444',
     voiceType: row.voice_type || fallback.voiceType || getDefaultVoiceTypeForId(row.id),
