@@ -16,8 +16,27 @@
 
 说明：
 
-- 当前仓库为 `Private`，下载 Release 需要先登录有权限的 GitHub 账号。
+- 当前仓库为 `Public`，可直接下载 Release。
 - Windows 目前提供便携版 zip（非安装向导）。
+
+### macOS 安装步骤（DMG）
+
+1. 在 Release 页面下载 `muyu-desktop-mac-arm64.dmg`。
+2. 双击打开 DMG，把 `木鱼桌宠.app` 拖到 `Applications`。
+3. 打开终端执行：
+
+```bash
+xattr -cr "/Applications/木鱼桌宠.app"
+```
+
+4. 再打开应用（建议首次使用“右键 -> 打开”）。
+
+第 3 步说明（简版）：
+
+- `xattr`：操作扩展属性
+- `-c`：清空扩展属性
+- `-r`：递归处理整个 `.app` 包
+- 作用：清除常见的 `com.apple.quarantine` 下载隔离标记，避免 macOS 误判“已损坏”
 
 ## 功能概览
 
