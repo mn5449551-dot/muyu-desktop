@@ -148,9 +148,15 @@ export const DEFAULT_CHARACTERS = [
 function normalizeAssetPath(assetPath) {
   if (!assetPath) return ''
   if (assetPath.startsWith('http://') || assetPath.startsWith('https://') || assetPath.startsWith('file://')) return assetPath
+  if (assetPath.startsWith('./images/')) return assetPath.slice(2)
+  if (assetPath.startsWith('./audio/')) return assetPath.slice(2)
+  // In packaged macOS app, renderer runs on file://.../index.html.
+  // Root paths like /images/... resolve to file system root and break.
+  if (assetPath.startsWith('/images/')) return assetPath.slice(1)
+  if (assetPath.startsWith('/audio/')) return assetPath.slice(1)
+  if (assetPath.startsWith('images/')) return assetPath
+  if (assetPath.startsWith('audio/')) return assetPath
   if (assetPath.startsWith('/')) return assetPath
-  if (assetPath.startsWith('images/')) return `/${assetPath}`
-  if (assetPath.startsWith('audio/')) return `/${assetPath}`
   return assetPath
 }
 
