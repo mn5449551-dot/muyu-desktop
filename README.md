@@ -57,7 +57,9 @@ xattr -cr "/Applications/木鱼桌宠.app"
 - 设置面板与记忆管理面板
 - 聊天/摘要/档案导出：Markdown、JSON、JSONL
 
-## 3 分钟本地跑起来
+## 源码开发（可选）
+
+如果你只是下载 Release 安装包使用，可以跳过本节。
 
 环境要求：
 
@@ -70,24 +72,6 @@ npm run rebuild-native
 npm run dev
 ```
 
-说明：
-
-- `npm run dev` 会同时启动 Vite 与 Electron。
-- 当 Electron/Node 版本变化后，需要重新执行 `npm run rebuild-native`（`better-sqlite3` 原生模块重编译）。
-
-## 常用命令
-
-- `npm run dev`：启动开发环境（Vite + Electron）
-- `npm run start:vite`：仅启动渲染进程（`http://localhost:5173`）
-- `npm run start:electron`：连接已启动的 Vite 服务启动 Electron
-- `npm run build:renderer`：构建渲染资源到 `dist/renderer`
-- `npm run build:mac`：打包 macOS `dmg`
-- `npm run build:win`：打包 Windows `zip`
-- `npm run build`：完整打包
-- `npm run test:e2e`：执行 Playwright 回归
-- `npm run test:e2e:debug`：调试模式执行 e2e
-- `npm run release:check`：发布前快速检查（定向回归）
-
 ## API Key 配置（火山引擎）
 
 默认能力：
@@ -95,9 +79,9 @@ npm run dev
 - LLM（方舟）：`https://ark.cn-beijing.volces.com/api/v3/chat/completions`
 - 语音（豆包）：ASR + TTS
 
-官方文档入口：
+获取入口（官方）：
 
-- 方舟控制台（LLM API Key）：`https://console.volcengine.com/ark`
+- 火山方舟控制台（大模型 / LLM Key）：`https://console.volcengine.com/ark`
 - 豆包语音快速入门（AppID / Access Token）：`https://www.volcengine.com/docs/6561/2119699`
 - 音色列表（`voice_type` / `emotion`）：`https://www.volcengine.com/docs/6561/1257544`
 - TTS V3 文档：`https://www.volcengine.com/docs/6561/1598757`
