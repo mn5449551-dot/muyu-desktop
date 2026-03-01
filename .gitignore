@@ -17,3 +17,9 @@ yarn-error.log*
 *.sqlite
 *.sqlite3
 muyu.db
+
+# Local agent / planning docs (keep local, do not upload)
+AGENTS.md
+CLAUDE.md
+规划文档.md
+docs/voice-plan.md
