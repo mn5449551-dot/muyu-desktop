@@ -121,6 +121,40 @@ function setMainWindowIgnoreMouse(ignore) {
   mainWindow.setIgnoreMouseEvents(next, { forward: true })
 }
 
+function isWindowAvailable(win) {
+  return Boolean(win && !win.isDestroyed())
+}
+
+function showWindow(win, options = {}) {
+  if (!isWindowAvailable(win)) return false
+  const { focus = true } = options
+  win.show()
+  if (focus) win.focus()
+  return true
+}
+
+function hideWindow(win) {
+  if (!isWindowAvailable(win)) return false
+  win.hide()
+  return true
+}
+
+function isWindowVisible(win) {
+  return Boolean(isWindowAvailable(win) && win.isVisible())
+}
+
+function registerIpcListenerEntries(entries = []) {
+  entries.forEach(([channel, listener]) => {
+    ipcMain.on(channel, listener)
+  })
+}
+
+function registerIpcHandleEntries(entries = []) {
+  entries.forEach(([channel, handler]) => {
+    ipcMain.handle(channel, handler)
+  })
+}
+
 function resizeMainWindow(scale, { persist = true } = {}) {
   const next = getPetWindowSize(scale)
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -140,7 +174,7 @@ function resizeMainWindow(scale, { persist = true } = {}) {
   const clamped = clampMainWindowBoundsToDisplay(unclamped)
   mainWindow.setBounds(clamped)
 
-  if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+  if (isWindowVisible(chatWindow)) {
     positionChatWindow({ charId: getCurrentCharId() })
   }
 
@@ -222,9 +256,8 @@ function createMainWindow() {
 }
 
 function createSettingsWindow() {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.show()
-    settingsWindow.focus()
+  if (isWindowAvailable(settingsWindow)) {
+    showWindow(settingsWindow)
     return settingsWindow
   }
 
@@ -249,7 +282,9 @@ function createSettingsWindow() {
 
   log.info('settings window created')
 
-  settingsWindow.once('ready-to-show', () => settingsWindow && settingsWindow.show())
+  settingsWindow.once('ready-to-show', () => {
+    showWindow(settingsWindow, { focus: false })
+  })
   settingsWindow.on('closed', () => { settingsWindow = null })
 
   return settingsWindow
@@ -268,10 +303,9 @@ function normalizeMemoryWindowQuery(payload = {}) {
 
 function createMemoryWindow(payload = {}) {
   const query = normalizeMemoryWindowQuery(payload)
-  if (memoryWindow && !memoryWindow.isDestroyed()) {
+  if (isWindowAvailable(memoryWindow)) {
     loadRendererWindow(memoryWindow, 'memory', query)
-    memoryWindow.show()
-    memoryWindow.focus()
+    showWindow(memoryWindow)
     return memoryWindow
   }
 
@@ -295,7 +329,9 @@ function createMemoryWindow(payload = {}) {
   loadRendererWindow(memoryWindow, 'memory', query)
   log.info('memory window created')
 
-  memoryWindow.once('ready-to-show', () => memoryWindow && memoryWindow.show())
+  memoryWindow.once('ready-to-show', () => {
+    showWindow(memoryWindow, { focus: false })
+  })
   memoryWindow.on('closed', () => { memoryWindow = null })
 
   return memoryWindow
@@ -539,40 +575,26 @@ function openChatWindow({ charId = getCurrentCharId(), preferSide } = {}) {
 }
 
 function hideChatWindow() {
-  if (!chatWindow || chatWindow.isDestroyed()) return { visible: false }
-  chatWindow.hide()
+  hideWindow(chatWindow)
   return { visible: false }
 }
 
 function hideAllWindows() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.hide()
-  }
-  if (chatWindow && !chatWindow.isDestroyed()) {
-    chatWindow.hide()
-  }
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.hide()
-  }
-  if (memoryWindow && !memoryWindow.isDestroyed()) {
-    memoryWindow.hide()
-  }
+  const windows = [mainWindow, chatWindow, settingsWindow, memoryWindow]
+  windows.forEach((win) => hideWindow(win))
   return { visible: false }
 }
 
 function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
+  if (!isWindowAvailable(mainWindow)) {
     createMainWindow()
   }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show()
-    mainWindow.focus()
-  }
-  return { visible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) }
+  showWindow(mainWindow)
+  return { visible: Boolean(isWindowAvailable(mainWindow) && mainWindow.isVisible()) }
 }
 
 function toggleMainWindowVisibility() {
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+  if (isWindowAvailable(mainWindow) && mainWindow.isVisible()) {
     return hideAllWindows()
   }
   return showMainWindow()
@@ -673,7 +695,7 @@ function movePetDrag(screenX, screenY) {
   mainWindow.setPosition(nextX, nextY)
   petDragState.lastX = nextX
   petDragState.lastY = nextY
-  if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+  if (isWindowVisible(chatWindow)) {
     positionChatWindow({ charId: getCurrentCharId() })
   }
 }
@@ -690,7 +712,7 @@ function switchCharacterEverywhere(charId) {
 
   db.setCurrentChar(nextId)
   sendToAllWindows(IPC.PET_MENU_ACTION, { type: 'switch-char', charId: nextId })
-  if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+  if (isWindowVisible(chatWindow)) {
     positionChatWindow({ charId: nextId })
   }
 
@@ -820,9 +842,9 @@ function getRuntimeState() {
 }
 
 function getDialogOwnerWindow() {
-  if (memoryWindow && !memoryWindow.isDestroyed()) return memoryWindow
-  if (settingsWindow && !settingsWindow.isDestroyed()) return settingsWindow
-  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+  if (isWindowAvailable(memoryWindow)) return memoryWindow
+  if (isWindowAvailable(settingsWindow)) return settingsWindow
+  if (isWindowAvailable(mainWindow)) return mainWindow
   return null
 }
 
@@ -838,299 +860,265 @@ async function chooseExportDirectory() {
 }
 
 function registerMainWindowIpcHandlers() {
-  ipcMain.on(IPC.SET_IGNORE_MOUSE, (_event, ignore) => {
-    setMainWindowIgnoreMouse(ignore)
-  })
+  registerIpcListenerEntries([
+    [IPC.SET_IGNORE_MOUSE, (_event, ignore) => setMainWindowIgnoreMouse(ignore)],
+    [IPC.PET_DRAG_START, (_event, payload) => startPetDrag(payload?.screenX, payload?.screenY, payload?.visibleTopInsetPx)],
+    [IPC.PET_DRAG_MOVE, (_event, payload) => movePetDrag(payload?.screenX, payload?.screenY)],
+    [IPC.PET_DRAG_END, () => endPetDrag()],
+    [IPC.SHOW_CONTEXT_MENU, () => {
+      const menu = Menu.buildFromTemplate([
+        { label: '设置', click: () => createSettingsWindow() },
+        { type: 'separator' },
+        { label: '退出', click: () => app.quit() },
+      ])
+      if (mainWindow) menu.popup({ window: mainWindow })
+    }],
+    [IPC.PET_SHOW_QUICK_MENU, (_event, payload) => popupPetQuickMenu(payload || {})],
+    [IPC.OPEN_SETTINGS, () => createSettingsWindow()],
+  ])
 
-  ipcMain.on(IPC.PET_DRAG_START, (_event, payload) => {
-    startPetDrag(payload?.screenX, payload?.screenY, payload?.visibleTopInsetPx)
-  })
-
-  ipcMain.on(IPC.PET_DRAG_MOVE, (_event, payload) => {
-    movePetDrag(payload?.screenX, payload?.screenY)
-  })
-
-  ipcMain.on(IPC.PET_DRAG_END, () => {
-    endPetDrag()
-  })
-
-  ipcMain.on(IPC.SHOW_CONTEXT_MENU, () => {
-    const menu = Menu.buildFromTemplate([
-      { label: '设置', click: () => createSettingsWindow() },
-      { type: 'separator' },
-      { label: '退出', click: () => app.quit() },
-    ])
-    if (mainWindow) menu.popup({ window: mainWindow })
-  })
-
-  ipcMain.on(IPC.PET_SHOW_QUICK_MENU, (_event, payload) => {
-    popupPetQuickMenu(payload || {})
-  })
-
-  ipcMain.on(IPC.OPEN_SETTINGS, () => createSettingsWindow())
-  ipcMain.handle(IPC.OPEN_MEMORY_WINDOW, (_event, payload) => {
-    createMemoryWindow(payload || {})
-    return { ok: true }
-  })
+  registerIpcHandleEntries([
+    [IPC.OPEN_MEMORY_WINDOW, (_event, payload) => {
+      createMemoryWindow(payload || {})
+      return { ok: true }
+    }],
+  ])
 }
 
 function registerE2EIpcHandlers() {
-  ipcMain.handle(IPC.E2E_GET_RUNTIME_STATE, () => getRuntimeState())
-  ipcMain.handle(IPC.E2E_SWITCH_CHAR, (_event, payload) => {
-    const row = switchCharacterEverywhere(payload?.charId)
-    return {
-      ok: Boolean(row),
-      charId: row?.id || null,
-    }
-  })
-  ipcMain.handle(IPC.E2E_SET_MAIN_WINDOW_POSITION, (_event, payload) => {
-    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
-    const x = Number(payload?.x)
-    const y = Number(payload?.y)
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return { ok: false }
-    mainWindow.setPosition(Math.round(x), Math.round(y))
-    if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
-      positionChatWindow({ charId: getCurrentCharId() })
-    }
-    return { ok: true, bounds: mainWindow.getBounds() }
-  })
-  ipcMain.handle(IPC.E2E_RESIZE_PET_SCALE, (_event, payload) => {
-    const result = resizeMainWindow(payload?.scale)
-    return { ok: true, ...result }
-  })
-  ipcMain.handle(IPC.E2E_SET_CHAT_WINDOW_SIZE, (_event, payload) => {
-    const win = createChatWindow()
-    const width = Number(payload?.width)
-    const height = Number(payload?.height)
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return { ok: false }
-    const nextSize = clampChatWindowSize(width, height)
-    win.setSize(nextSize.width, nextSize.height)
-    db.setChatWindowPrefs(nextSize)
-    if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
-      positionChatWindow({ charId: getCurrentCharId() })
-    }
-    return { ok: true, ...nextSize, bounds: win.getBounds() }
-  })
-  ipcMain.handle(IPC.E2E_OPEN_CHAT, (_event, payload) => openChatWindow(payload || {}))
-  ipcMain.handle(IPC.E2E_HIDE_CHAT, () => hideChatWindow())
-  ipcMain.handle(IPC.E2E_HIDE_ALL_WINDOWS, () => hideAllWindows())
-  ipcMain.handle(IPC.E2E_SHOW_MAIN_WINDOW, () => showMainWindow())
+  registerIpcHandleEntries([
+    [IPC.E2E_GET_RUNTIME_STATE, () => getRuntimeState()],
+    [IPC.E2E_SWITCH_CHAR, (_event, payload) => {
+      const row = switchCharacterEverywhere(payload?.charId)
+      return {
+        ok: Boolean(row),
+        charId: row?.id || null,
+      }
+    }],
+    [IPC.E2E_SET_MAIN_WINDOW_POSITION, (_event, payload) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+      const x = Number(payload?.x)
+      const y = Number(payload?.y)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return { ok: false }
+      mainWindow.setPosition(Math.round(x), Math.round(y))
+      if (isWindowVisible(chatWindow)) {
+        positionChatWindow({ charId: getCurrentCharId() })
+      }
+      return { ok: true, bounds: mainWindow.getBounds() }
+    }],
+    [IPC.E2E_RESIZE_PET_SCALE, (_event, payload) => {
+      const result = resizeMainWindow(payload?.scale)
+      return { ok: true, ...result }
+    }],
+    [IPC.E2E_SET_CHAT_WINDOW_SIZE, (_event, payload) => {
+      const win = createChatWindow()
+      const width = Number(payload?.width)
+      const height = Number(payload?.height)
+      if (!Number.isFinite(width) || !Number.isFinite(height)) return { ok: false }
+      const nextSize = clampChatWindowSize(width, height)
+      win.setSize(nextSize.width, nextSize.height)
+      db.setChatWindowPrefs(nextSize)
+      if (isWindowVisible(chatWindow)) {
+        positionChatWindow({ charId: getCurrentCharId() })
+      }
+      return { ok: true, ...nextSize, bounds: win.getBounds() }
+    }],
+    [IPC.E2E_OPEN_CHAT, (_event, payload) => openChatWindow(payload || {})],
+    [IPC.E2E_HIDE_CHAT, () => hideChatWindow()],
+    [IPC.E2E_HIDE_ALL_WINDOWS, () => hideAllWindows()],
+    [IPC.E2E_SHOW_MAIN_WINDOW, () => showMainWindow()],
+  ])
 }
 
 function registerChatWindowIpcHandlers() {
-  ipcMain.handle(IPC.CHAT_WINDOW_OPEN, (_event, payload) => {
-    return openChatWindow(payload || {})
-  })
-
-  ipcMain.handle(IPC.CHAT_WINDOW_HIDE, () => {
-    return hideChatWindow()
-  })
-
-  ipcMain.handle(IPC.CHAT_WINDOW_GET_STATE, () => {
-    if (!chatWindow || chatWindow.isDestroyed()) {
-      return { visible: false, charId: getCurrentCharId() }
-    }
-    const charId = getCurrentCharId()
-    const prefs = getChatDockPrefs(charId)
-    return {
-      visible: chatWindow.isVisible(),
-      charId,
-      side: prefs.side,
-      offsetX: prefs.offsetX,
-      offsetY: prefs.offsetY,
-      bounds: chatWindow.getBounds(),
-    }
-  })
-
-  ipcMain.handle(IPC.CHAT_WINDOW_SET_OFFSET, (_event, payload) => {
-    const charId = String(payload?.charId || getCurrentCharId())
-    const side = payload?.side === 'left' ? 'left' : 'right'
-    const offsetX = Number(payload?.offsetX)
-    const offsetY = Number(payload?.offsetY)
-    const next = db.setCharacterChatWindowPrefs(charId, { side, offsetX, offsetY })
-    if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
-      positionChatWindow({ charId })
-    }
-    return next
-  })
-
-  ipcMain.handle(IPC.CHAT_WINDOW_PIN_TO_PET, (_event, payload) => {
-    const charId = String(payload?.charId || getCurrentCharId())
-    return positionChatWindow({ charId, shouldShow: false, preferSide: payload?.preferSide })
-  })
+  registerIpcHandleEntries([
+    [IPC.CHAT_WINDOW_OPEN, (_event, payload) => openChatWindow(payload || {})],
+    [IPC.CHAT_WINDOW_HIDE, () => hideChatWindow()],
+    [IPC.CHAT_WINDOW_GET_STATE, () => {
+      if (!chatWindow || chatWindow.isDestroyed()) {
+        return { visible: false, charId: getCurrentCharId() }
+      }
+      const charId = getCurrentCharId()
+      const prefs = getChatDockPrefs(charId)
+      return {
+        visible: chatWindow.isVisible(),
+        charId,
+        side: prefs.side,
+        offsetX: prefs.offsetX,
+        offsetY: prefs.offsetY,
+        bounds: chatWindow.getBounds(),
+      }
+    }],
+    [IPC.CHAT_WINDOW_SET_OFFSET, (_event, payload) => {
+      const charId = String(payload?.charId || getCurrentCharId())
+      const side = payload?.side === 'left' ? 'left' : 'right'
+      const offsetX = Number(payload?.offsetX)
+      const offsetY = Number(payload?.offsetY)
+      const next = db.setCharacterChatWindowPrefs(charId, { side, offsetX, offsetY })
+      if (isWindowVisible(chatWindow)) {
+        positionChatWindow({ charId })
+      }
+      return next
+    }],
+    [IPC.CHAT_WINDOW_PIN_TO_PET, (_event, payload) => {
+      const charId = String(payload?.charId || getCurrentCharId())
+      return positionChatWindow({ charId, shouldShow: false, preferSide: payload?.preferSide })
+    }],
+  ])
 }
 
 function registerCharacterIpcHandlers() {
-  ipcMain.handle(IPC.DB_GET_STATE, () => db.getState())
-  ipcMain.on(IPC.DB_SAVE_COUNT, (_event, count) => db.saveCount(count))
-  ipcMain.on(IPC.DB_SET_CHAR, (_event, charId) => db.setCurrentChar(charId))
-  ipcMain.handle(IPC.DB_GET_REACHED_MILESTONES, () => db.getReachedMilestones())
-  ipcMain.on(IPC.DB_SAVE_REACHED_MILESTONE, (_e, n) => db.saveReachedMilestone(n))
+  registerIpcListenerEntries([
+    [IPC.DB_SAVE_COUNT, (_event, count) => db.saveCount(count)],
+    [IPC.DB_SET_CHAR, (_event, charId) => db.setCurrentChar(charId)],
+    [IPC.DB_SAVE_REACHED_MILESTONE, (_e, n) => db.saveReachedMilestone(n)],
+  ])
 
-  ipcMain.handle(IPC.DB_LIST_CHARACTERS, () => db.listCharacters())
-
-  ipcMain.handle(IPC.DB_UPSERT_CHARACTER, (_event, payload) => {
-    const row = db.upsertCharacter(payload || {})
-    sendToAllWindows(IPC.CHARACTERS_UPDATED, db.listCharacters())
-    return row
-  })
-
-  ipcMain.handle(IPC.DB_TOGGLE_CHARACTER_ACTIVE, (_event, payload) => {
-    if (!payload?.id) throw new Error('缺少角色 ID')
-    db.toggleCharacterActive(payload.id, payload.isActive)
-    const list = db.listCharacters()
-    sendToAllWindows(IPC.CHARACTERS_UPDATED, list)
-    return list
-  })
-
-  ipcMain.handle(IPC.DB_REORDER_CHARACTERS, (_event, ids) => {
-    if (!Array.isArray(ids) || ids.length === 0) throw new Error('缺少角色 ID 列表')
-    db.reorderCharacters(ids)
-    const list = db.listCharacters()
-    sendToAllWindows(IPC.CHARACTERS_UPDATED, list)
-    return list
-  })
+  registerIpcHandleEntries([
+    [IPC.DB_GET_STATE, () => db.getState()],
+    [IPC.DB_GET_REACHED_MILESTONES, () => db.getReachedMilestones()],
+    [IPC.DB_LIST_CHARACTERS, () => db.listCharacters()],
+    [IPC.DB_UPSERT_CHARACTER, (_event, payload) => {
+      const row = db.upsertCharacter(payload || {})
+      sendToAllWindows(IPC.CHARACTERS_UPDATED, db.listCharacters())
+      return row
+    }],
+    [IPC.DB_TOGGLE_CHARACTER_ACTIVE, (_event, payload) => {
+      if (!payload?.id) throw new Error('缺少角色 ID')
+      db.toggleCharacterActive(payload.id, payload.isActive)
+      const list = db.listCharacters()
+      sendToAllWindows(IPC.CHARACTERS_UPDATED, list)
+      return list
+    }],
+    [IPC.DB_REORDER_CHARACTERS, (_event, ids) => {
+      if (!Array.isArray(ids) || ids.length === 0) throw new Error('缺少角色 ID 列表')
+      db.reorderCharacters(ids)
+      const list = db.listCharacters()
+      sendToAllWindows(IPC.CHARACTERS_UPDATED, list)
+      return list
+    }],
+  ])
 }
 
 function registerConfigIpcHandlers() {
-  ipcMain.handle(IPC.ASSET_IMPORT_FILE, async (_event, payload) => {
-    const type = payload?.type || 'image'
-    const characterId = payload?.characterId || 'custom'
-    return assetService.importAsset(type, characterId)
-  })
-
-  ipcMain.handle(IPC.APP_GET_CONFIG, () => db.getAppConfig())
-  ipcMain.handle(IPC.APP_SET_CONFIG, (_event, payload) => db.setAppConfig(payload || {}))
-  ipcMain.handle(IPC.PET_GET_UI_PREFS, () => db.getPetUiPrefs())
-  ipcMain.handle(IPC.PET_SET_UI_PREFS, (_event, payload) => {
-    const prefs = db.setPetUiPrefs(payload || {})
-    resizeMainWindow(prefs.scale, { persist: false })
-    return prefs
-  })
-  ipcMain.handle(IPC.PET_RESIZE_WINDOW, (_event, payload) => {
-    const persist = payload?.persist !== false
-    return resizeMainWindow(payload?.scale, { persist })
-  })
-  ipcMain.handle(IPC.PET_SCALE_ADJUST, (_event, payload) => adjustPetScale(payload?.delta))
-  ipcMain.handle(IPC.PET_SCALE_RESET, () => resizeMainWindow(1))
-
-  ipcMain.on(IPC.PET_HUD_EXPAND, (_e, requiredWidth) => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const bounds = mainWindow.getBounds()
-    const w = Math.max(bounds.width, Math.ceil(requiredWidth))
-    if (w <= bounds.width) return
-    mainWindow.setBounds({
-      x: Math.round(bounds.x - (w - bounds.width) / 2),
-      y: bounds.y,
-      width: w,
-      height: bounds.height,
-    })
-  })
-
-  ipcMain.on(IPC.PET_HUD_SHRINK, () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const prefs = db.getPetUiPrefs()
-    const { width } = getPetWindowSize(prefs.scale)
-    const bounds = mainWindow.getBounds()
-    if (bounds.width <= width) return
-    mainWindow.setBounds({
-      x: Math.round(bounds.x + (bounds.width - width) / 2),
-      y: bounds.y,
-      width,
-      height: bounds.height,
-    })
-  })
-
-  ipcMain.handle(IPC.PROFILE_GET, () => db.getUserProfile())
-  ipcMain.handle(IPC.PROFILE_SET, (_event, payload) => db.setUserProfile(payload || {}))
-  ipcMain.handle(IPC.PROFILE_PINS_GET, () => db.getProfilePinnedKeys())
-  ipcMain.handle(IPC.PROFILE_PINS_SET, (_event, payload) => ({
-    ok: true,
-    keys: db.setProfilePinnedKeys(payload),
-  }))
-  ipcMain.handle(IPC.PROMPTS_LIST, () => {
-    return listReadonlyPrompts({
+  registerIpcHandleEntries([
+    [IPC.ASSET_IMPORT_FILE, async (_event, payload) => {
+      const type = payload?.type || 'image'
+      const characterId = payload?.characterId || 'custom'
+      return assetService.importAsset(type, characterId)
+    }],
+    [IPC.APP_GET_CONFIG, () => db.getAppConfig()],
+    [IPC.APP_SET_CONFIG, (_event, payload) => db.setAppConfig(payload || {})],
+    [IPC.PET_GET_UI_PREFS, () => db.getPetUiPrefs()],
+    [IPC.PET_SET_UI_PREFS, (_event, payload) => {
+      const prefs = db.setPetUiPrefs(payload || {})
+      resizeMainWindow(prefs.scale, { persist: false })
+      return prefs
+    }],
+    [IPC.PET_RESIZE_WINDOW, (_event, payload) => {
+      const persist = payload?.persist !== false
+      return resizeMainWindow(payload?.scale, { persist })
+    }],
+    [IPC.PET_SCALE_ADJUST, (_event, payload) => adjustPetScale(payload?.delta)],
+    [IPC.PET_SCALE_RESET, () => resizeMainWindow(1)],
+    [IPC.PROFILE_GET, () => db.getUserProfile()],
+    [IPC.PROFILE_SET, (_event, payload) => db.setUserProfile(payload || {})],
+    [IPC.PROFILE_PINS_GET, () => db.getProfilePinnedKeys()],
+    [IPC.PROFILE_PINS_SET, (_event, payload) => ({
+      ok: true,
+      keys: db.setProfilePinnedKeys(payload),
+    })],
+    [IPC.PROMPTS_LIST, () => listReadonlyPrompts({
       memorySummaryPrompt: db.getMemorySummarySystemPrompt(),
-    })
-  })
+    })],
+  ])
+
+  registerIpcListenerEntries([
+    [IPC.PET_HUD_EXPAND, (_e, requiredWidth) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      const bounds = mainWindow.getBounds()
+      const w = Math.max(bounds.width, Math.ceil(requiredWidth))
+      if (w <= bounds.width) return
+      mainWindow.setBounds({
+        x: Math.round(bounds.x - (w - bounds.width) / 2),
+        y: bounds.y,
+        width: w,
+        height: bounds.height,
+      })
+    }],
+    [IPC.PET_HUD_SHRINK, () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      const prefs = db.getPetUiPrefs()
+      const { width } = getPetWindowSize(prefs.scale)
+      const bounds = mainWindow.getBounds()
+      if (bounds.width <= width) return
+      mainWindow.setBounds({
+        x: Math.round(bounds.x + (bounds.width - width) / 2),
+        y: bounds.y,
+        width,
+        height: bounds.height,
+      })
+    }],
+  ])
 }
 
 function registerLlmIpcHandlers() {
-  ipcMain.handle(IPC.CHAT_GET_RECENT, (_event, payload) => {
-    const limit = payload?.limit || 20
-    const sessionId = String(payload?.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
-    return db.getRecentChatMessages(limit, sessionId)
-  })
+  registerIpcHandleEntries([
+    [IPC.CHAT_GET_RECENT, (_event, payload) => {
+      const limit = payload?.limit || 20
+      const sessionId = String(payload?.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
+      return db.getRecentChatMessages(limit, sessionId)
+    }],
+    [IPC.LLM_STREAM_CHAT, (event, payload) => {
+      const prompt = payload?.prompt || ''
+      const sessionId = String(payload?.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
+      const charId = payload?.charId || ''
 
-  ipcMain.handle(IPC.LLM_STREAM_CHAT, (event, payload) => {
-    const prompt = payload?.prompt || ''
-    const sessionId = String(payload?.sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID
-    const charId = payload?.charId || ''
-
-    return llmService.startStreamChat({
-      prompt,
-      sessionId,
-      charId,
-      sender: event.sender,
-      onAfterDone: async () => {
-        try {
-          await memoryService.runSummaryIfNeeded({ sessionId, threshold: 20, maxMessages: 40 })
-        } catch (error) {
-          log.error('[memory-summary-auto]', error)
-        } finally {
-          sendToAllWindows(IPC.MEMORY_CONFLICT_REFRESH, { sessionId })
-        }
-      },
-    })
-  })
-
-  ipcMain.handle(IPC.LLM_CANCEL, (_event, payload) => {
-    return { canceled: llmService.cancel(payload?.requestId) }
-  })
-
-  ipcMain.handle(IPC.LLM_TEST_CONNECTION, async (_event, payload) => {
-    return llmService.testConnection(payload || {})
-  })
+      return llmService.startStreamChat({
+        prompt,
+        sessionId,
+        charId,
+        sender: event.sender,
+        onAfterDone: async () => {
+          try {
+            await memoryService.runSummaryIfNeeded({ sessionId, threshold: 20, maxMessages: 40 })
+          } catch (error) {
+            log.error('[memory-summary-auto]', error)
+          } finally {
+            sendToAllWindows(IPC.MEMORY_CONFLICT_REFRESH, { sessionId })
+          }
+        },
+      })
+    }],
+    [IPC.LLM_CANCEL, (_event, payload) => ({
+      canceled: llmService.cancel(payload?.requestId),
+    })],
+    [IPC.LLM_TEST_CONNECTION, async (_event, payload) => llmService.testConnection(payload || {})],
+  ])
 }
 
 function registerVoiceIpcHandlers() {
-  ipcMain.handle(IPC.VOICE_TRANSCRIBE, async (_event, payload) => {
-    return voiceService.transcribeAudio(payload || {})
-  })
-
-  ipcMain.handle(IPC.VOICE_SYNTHESIZE, async (_event, payload) => {
-    return voiceService.synthesize(payload || {})
-  })
-
-  ipcMain.handle(IPC.VOICE_TEST_CONNECTION, async (_event, payload) => {
-    return voiceService.testConnection(payload || {})
-  })
-
-  ipcMain.handle(IPC.VOICE_STREAM_START, async (event, payload) => {
-    return voiceService.startStreamSession(payload || {}, {
-      onPartial: (data) => {
-        event.sender.send(IPC.VOICE_STREAM_PARTIAL, data)
-      },
-      onFinal: (data) => {
-        event.sender.send(IPC.VOICE_STREAM_FINAL, data)
-      },
-      onError: (data) => {
-        event.sender.send(IPC.VOICE_STREAM_ERROR, data)
-      },
-    })
-  })
-
-  ipcMain.handle(IPC.VOICE_STREAM_CHUNK, async (_event, payload) => {
-    return voiceService.pushStreamChunk(payload || {})
-  })
-
-  ipcMain.handle(IPC.VOICE_STREAM_STOP, async (_event, payload) => {
-    return voiceService.stopStreamSession(payload || {})
-  })
-
-  ipcMain.handle(IPC.VOICE_STREAM_CANCEL, async (_event, payload) => {
-    return voiceService.cancelStreamSession(payload || {})
-  })
+  registerIpcHandleEntries([
+    [IPC.VOICE_TRANSCRIBE, async (_event, payload) => voiceService.transcribeAudio(payload || {})],
+    [IPC.VOICE_SYNTHESIZE, async (_event, payload) => voiceService.synthesize(payload || {})],
+    [IPC.VOICE_TEST_CONNECTION, async (_event, payload) => voiceService.testConnection(payload || {})],
+    [IPC.VOICE_STREAM_START, async (event, payload) => {
+      return voiceService.startStreamSession(payload || {}, {
+        onPartial: (data) => {
+          event.sender.send(IPC.VOICE_STREAM_PARTIAL, data)
+        },
+        onFinal: (data) => {
+          event.sender.send(IPC.VOICE_STREAM_FINAL, data)
+        },
+        onError: (data) => {
+          event.sender.send(IPC.VOICE_STREAM_ERROR, data)
+        },
+      })
+    }],
+    [IPC.VOICE_STREAM_CHUNK, async (_event, payload) => voiceService.pushStreamChunk(payload || {})],
+    [IPC.VOICE_STREAM_STOP, async (_event, payload) => voiceService.stopStreamSession(payload || {})],
+    [IPC.VOICE_STREAM_CANCEL, async (_event, payload) => voiceService.cancelStreamSession(payload || {})],
+  ])
 }
 
 function registerExportAndMemoryIpcHandlers() {

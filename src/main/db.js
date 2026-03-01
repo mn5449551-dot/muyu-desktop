@@ -801,11 +801,70 @@ function setAppStateValue(key, value) {
   db.prepare('INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)').run(key, String(value))
 }
 
+function setAppStateWhenDefined(payload = {}, fieldKey, stateKey, mapValue) {
+  if (payload[fieldKey] === undefined) return false
+  const nextValue = typeof mapValue === 'function' ? mapValue(payload[fieldKey], payload) : payload[fieldKey]
+  setAppStateValue(stateKey, nextValue)
+  return true
+}
+
+const LLM_CONFIG_STATE_MAPPINGS = Object.freeze([
+  ['baseUrl', 'llm_base_url', (value) => value.trim()],
+  ['model', 'llm_model', (value) => value.trim()],
+  ['temperature', 'llm_temperature', (value) => Number(value).toString()],
+  ['maxContext', 'llm_max_context', (value) => Number(value).toString()],
+  ['multiAgentEnabled', 'llm_multi_agent_enabled', (value) => (value ? '1' : '0')],
+])
+
+const VOICE_CONFIG_STATE_MAPPINGS = Object.freeze([
+  ['enabled', 'voice_enabled', (value) => (value ? '1' : '0')],
+  ['autoPlay', 'voice_auto_play', (value) => (value ? '1' : '0')],
+  ['region', 'voice_region', (value) => String(value || '').trim() || DEFAULT_VOICE_REGION],
+  ['appId', 'voice_app_id', (value) => String(value || '').trim()],
+  ['asrMode', 'voice_asr_mode', (value) => normalizeAsrMode(value)],
+  ['asrStreamUrl', 'voice_asr_stream_url', (value) => normalizeAsrStreamUrl(value)],
+  ['asrUploadEndpoint', 'voice_asr_upload_endpoint', (value) => String(value || '').trim()],
+  ['ttsResourceId', 'voice_tts_resource_id', (value) => String(value || '').trim()],
+])
+
+function applyAppConfigStateMappings(payload = {}, mappings = []) {
+  mappings.forEach(([fieldKey, stateKey, mapValue]) => {
+    setAppStateWhenDefined(payload, fieldKey, stateKey, mapValue)
+  })
+}
+
 function getBooleanAppStateValue(key, defaultValue = false) {
   const raw = getAppStateValue(key)
   if (raw === null || raw === undefined) return defaultValue
   const value = String(raw).trim().toLowerCase()
   return value === '1' || value === 'true'
+}
+
+function saveEncryptedAppStateValue(stateKey, secretValue, unavailableMessage) {
+  const secret = String(secretValue || '').trim()
+  if (!secret) {
+    setAppStateValue(stateKey, null)
+    return
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error(unavailableMessage)
+  }
+  const encrypted = safeStorage.encryptString(secret)
+  setAppStateValue(stateKey, encrypted.toString('base64'))
+}
+
+function readEncryptedAppStateValue(stateKey, unavailableMessage, invalidMessage) {
+  const encrypted = getAppStateValue(stateKey)
+  if (!encrypted) return ''
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error(unavailableMessage)
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+  } catch {
+    setAppStateValue(stateKey, null)
+    throw new Error(invalidMessage)
+  }
 }
 
 function normalizeAsrMode(mode, asrResourceId = '') {
@@ -909,6 +968,7 @@ function getMemorySummarySystemPrompt() {
 
 function getAppConfig() {
   const voiceAsr = getNormalizedVoiceAsrConfig()
+  const encryptionAvailable = safeStorage.isEncryptionAvailable()
 
   return {
     llm: {
@@ -919,7 +979,7 @@ function getAppConfig() {
       multiAgentEnabled: getBooleanAppStateValue('llm_multi_agent_enabled', DEFAULT_MULTI_AGENT_ENABLED),
       memorySummarySystemPrompt: getMemorySummarySystemPrompt(),
       apiKeyConfigured: Boolean(getAppStateValue('llm_api_key_enc')),
-      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      encryptionAvailable,
     },
     voice: {
       enabled: getBooleanAppStateValue('voice_enabled', DEFAULT_VOICE_ENABLED),
@@ -937,7 +997,7 @@ function getAppConfig() {
         10
       ),
       accessKeyConfigured: Boolean(getAppStateValue('voice_access_key_enc')),
-      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      encryptionAvailable,
     },
   }
 }
@@ -946,13 +1006,7 @@ function setAppConfig(payload) {
   const llm = payload.llm || {}
   const voice = payload.voice || {}
 
-  if (llm.baseUrl !== undefined) setAppStateValue('llm_base_url', llm.baseUrl.trim())
-  if (llm.model !== undefined) setAppStateValue('llm_model', llm.model.trim())
-  if (llm.temperature !== undefined) setAppStateValue('llm_temperature', Number(llm.temperature).toString())
-  if (llm.maxContext !== undefined) setAppStateValue('llm_max_context', Number(llm.maxContext).toString())
-  if (llm.multiAgentEnabled !== undefined) {
-    setAppStateValue('llm_multi_agent_enabled', llm.multiAgentEnabled ? '1' : '0')
-  }
+  applyAppConfigStateMappings(llm, LLM_CONFIG_STATE_MAPPINGS)
   if (llm.memorySummarySystemPrompt !== undefined) {
     const prompt = String(llm.memorySummarySystemPrompt || '').trim()
     if (!prompt) {
@@ -963,47 +1017,14 @@ function setAppConfig(payload) {
   }
 
   if (llm.apiKey !== undefined) {
-    const apiKey = String(llm.apiKey || '').trim()
-    if (!apiKey) {
-      setAppStateValue('llm_api_key_enc', null)
-    } else {
-      if (!safeStorage.isEncryptionAvailable()) {
-        throw new Error('当前系统不支持安全加密存储，无法保存 API Key')
-      }
-      const encrypted = safeStorage.encryptString(apiKey)
-      setAppStateValue('llm_api_key_enc', encrypted.toString('base64'))
-    }
+    saveEncryptedAppStateValue('llm_api_key_enc', llm.apiKey, '当前系统不支持安全加密存储，无法保存 API Key')
   }
 
-  if (voice.enabled !== undefined) {
-    setAppStateValue('voice_enabled', voice.enabled ? '1' : '0')
-  }
-  if (voice.autoPlay !== undefined) {
-    setAppStateValue('voice_auto_play', voice.autoPlay ? '1' : '0')
-  }
-  if (voice.region !== undefined) {
-    setAppStateValue('voice_region', String(voice.region || '').trim() || DEFAULT_VOICE_REGION)
-  }
-  if (voice.appId !== undefined) {
-    setAppStateValue('voice_app_id', String(voice.appId || '').trim())
-  }
-  if (voice.asrMode !== undefined) {
-    setAppStateValue('voice_asr_mode', normalizeAsrMode(voice.asrMode))
-  }
+  applyAppConfigStateMappings(voice, VOICE_CONFIG_STATE_MAPPINGS)
   if (voice.asrResourceId !== undefined) {
     const asrMode = normalizeAsrMode(voice.asrMode, voice.asrResourceId)
     const value = normalizeAsrResourceIdByMode(asrMode, voice.asrResourceId)
     setAppStateValue('voice_asr_resource_id', value)
-  }
-  if (voice.asrStreamUrl !== undefined) {
-    const url = normalizeAsrStreamUrl(voice.asrStreamUrl)
-    setAppStateValue('voice_asr_stream_url', url)
-  }
-  if (voice.asrUploadEndpoint !== undefined) {
-    setAppStateValue('voice_asr_upload_endpoint', String(voice.asrUploadEndpoint || '').trim())
-  }
-  if (voice.ttsResourceId !== undefined) {
-    setAppStateValue('voice_tts_resource_id', String(voice.ttsResourceId || '').trim())
   }
   if (voice.ttsFormat !== undefined) {
     const format = String(voice.ttsFormat || '').trim().toLowerCase()
@@ -1017,16 +1038,7 @@ function setAppConfig(payload) {
     setAppStateValue('voice_tts_sample_rate', String(rate))
   }
   if (voice.accessKey !== undefined) {
-    const accessKey = String(voice.accessKey || '').trim()
-    if (!accessKey) {
-      setAppStateValue('voice_access_key_enc', null)
-    } else {
-      if (!safeStorage.isEncryptionAvailable()) {
-        throw new Error('当前系统不支持安全加密存储，无法保存语音 Access Token')
-      }
-      const encrypted = safeStorage.encryptString(accessKey)
-      setAppStateValue('voice_access_key_enc', encrypted.toString('base64'))
-    }
+    saveEncryptedAppStateValue('voice_access_key_enc', voice.accessKey, '当前系统不支持安全加密存储，无法保存语音 Access Token')
   }
 
   return getAppConfig()
@@ -1038,20 +1050,11 @@ function getLlmCredentials() {
   const temperature = Number.parseFloat(getAppStateValue('llm_temperature') || `${DEFAULT_TEMPERATURE}`)
   const maxContext = Number.parseInt(getAppStateValue('llm_max_context') || `${DEFAULT_MAX_CONTEXT}`, 10)
   const multiAgentEnabled = getBooleanAppStateValue('llm_multi_agent_enabled', DEFAULT_MULTI_AGENT_ENABLED)
-
-  let apiKey = ''
-  const encrypted = getAppStateValue('llm_api_key_enc')
-  if (encrypted) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('系统当前不可解密 API Key，请重新配置')
-    }
-    try {
-      apiKey = safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
-    } catch {
-      setAppStateValue('llm_api_key_enc', null)
-      throw new Error('已保存的 API Key 无法解密，请在设置中重新填写并保存')
-    }
-  }
+  const apiKey = readEncryptedAppStateValue(
+    'llm_api_key_enc',
+    '系统当前不可解密 API Key，请重新配置',
+    '已保存的 API Key 无法解密，请在设置中重新填写并保存'
+  )
 
   return { baseUrl, model, temperature, maxContext, multiAgentEnabled, apiKey }
 }
@@ -1069,20 +1072,11 @@ function getVoiceCredentials() {
     getAppStateValue('voice_tts_sample_rate') || `${DEFAULT_VOICE_TTS_SAMPLE_RATE}`,
     10
   )
-
-  let accessKey = ''
-  const encrypted = getAppStateValue('voice_access_key_enc')
-  if (encrypted) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('系统当前不可解密语音 Access Token，请重新配置')
-    }
-    try {
-      accessKey = safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
-    } catch {
-      setAppStateValue('voice_access_key_enc', null)
-      throw new Error('已保存的语音 Access Token 无法解密，请在设置中重新填写并保存')
-    }
-  }
+  const accessKey = readEncryptedAppStateValue(
+    'voice_access_key_enc',
+    '系统当前不可解密语音 Access Token，请重新配置',
+    '已保存的语音 Access Token 无法解密，请在设置中重新填写并保存'
+  )
 
   return {
     enabled,

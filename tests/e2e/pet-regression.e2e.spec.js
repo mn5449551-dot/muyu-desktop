@@ -85,57 +85,127 @@ async function getActiveCharacters(page) {
   return runtime.characters.filter((item) => item.isActive)
 }
 
-async function findChatPage(app) {
+async function findWindowBySelector(app, selector) {
   for (const page of app.windows()) {
     try {
-      const count = await page.locator('[data-testid="chat-root"]').count()
+      const count = await page.locator(selector).count()
       if (count > 0) return page
     } catch {
       // ignore page transition errors
     }
   }
   return null
+}
+
+async function ensureWindowOpen({ openWindow, app, selector, timeout = 10_000 }) {
+  await openWindow()
+  let targetPage = null
+  await expect.poll(async () => {
+    targetPage = await findWindowBySelector(app, selector)
+    return Boolean(targetPage)
+  }).toBe(true)
+  await targetPage.waitForSelector(selector, { timeout })
+  return targetPage
 }
 
 async function ensureChatOpen(ctx) {
-  await ctx.page.evaluate(() => window.e2eAPI.openChatWindow({}))
-  let chatPage = null
-  await expect.poll(async () => {
-    chatPage = await findChatPage(ctx.app)
-    return Boolean(chatPage)
-  }).toBe(true)
-
-  await chatPage.waitForSelector('[data-testid="chat-shell"]', { timeout: 10_000 })
-  return chatPage
-}
-
-async function findSettingsPage(app) {
-  for (const page of app.windows()) {
-    try {
-      const count = await page.locator('.settings-root').count()
-      if (count > 0) return page
-    } catch {
-      // ignore page transition errors
-    }
-  }
-  return null
+  return ensureWindowOpen({
+    openWindow: () => ctx.page.evaluate(() => window.e2eAPI.openChatWindow({})),
+    app: ctx.app,
+    selector: '[data-testid="chat-shell"]',
+  })
 }
 
 async function ensureSettingsOpen(ctx) {
-  await ctx.page.evaluate(() => window.electronAPI.openSettings())
-  let settingsPage = null
-  await expect.poll(async () => {
-    settingsPage = await findSettingsPage(ctx.app)
-    return Boolean(settingsPage)
-  }).toBe(true)
-  await settingsPage.waitForSelector('.settings-layout', { timeout: 10_000 })
-  return settingsPage
+  return ensureWindowOpen({
+    openWindow: () => ctx.page.evaluate(() => window.electronAPI.openSettings()),
+    app: ctx.app,
+    selector: '.settings-layout',
+  })
+}
+
+async function setAppConfig(page, patch = {}) {
+  await page.evaluate(async (payload) => {
+    await window.electronAPI.setAppConfig(payload)
+  }, patch)
 }
 
 async function configureVoice(page, patch = {}) {
-  await page.evaluate(async (payload) => {
-    await window.electronAPI.setAppConfig({ voice: payload })
-  }, patch)
+  await setAppConfig(page, { voice: patch })
+}
+
+async function configureLlmApiKey(page, apiKey = 'e2e-temp-api-key') {
+  await setAppConfig(page, { llm: { apiKey: apiKey } })
+  await expect.poll(async () => {
+    return page.evaluate(async () => {
+      const config = await window.electronAPI.getAppConfig()
+      return Boolean(config?.llm?.apiKeyConfigured)
+    })
+  }).toBe(true)
+}
+
+async function installFakeMediaRecorder(page, options = {}) {
+  await page.evaluate((payload) => {
+    const {
+      mimeType = 'audio/webm',
+      chunks = ['fake-audio'],
+      chunkDelays = [],
+      defaultChunkDelay = 8,
+      stopDelay = 8,
+    } = payload || {}
+
+    const normalizedChunks = Array.isArray(chunks) && chunks.length > 0
+      ? chunks.map((item) => String(item))
+      : ['fake-audio']
+    const normalizedDelays = Array.isArray(chunkDelays) ? chunkDelays : []
+    const fallbackDelay = Number.isFinite(defaultChunkDelay) ? defaultChunkDelay : 8
+    const resolvedStopDelay = Number.isFinite(stopDelay) ? stopDelay : 8
+
+    class FakeMediaRecorder {
+      static isTypeSupported() {
+        return true
+      }
+
+      constructor(stream, recorderOptions = {}) {
+        this.stream = stream
+        this.mimeType = recorderOptions.mimeType || mimeType
+        this.state = 'inactive'
+        this.ondataavailable = null
+        this.onstop = null
+        this.onerror = null
+      }
+
+      start() {
+        this.state = 'recording'
+        normalizedChunks.forEach((chunk, index) => {
+          const directDelay = Number(normalizedDelays[index])
+          const delay = Number.isFinite(directDelay) ? directDelay : fallbackDelay * (index + 1)
+          setTimeout(() => {
+            this.ondataavailable && this.ondataavailable({
+              data: new Blob([chunk], { type: this.mimeType }),
+            })
+          }, delay)
+        })
+      }
+
+      stop() {
+        this.state = 'inactive'
+        setTimeout(() => {
+          this.onstop && this.onstop()
+        }, resolvedStopDelay)
+      }
+    }
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: async () => ({
+          getTracks: () => [{ stop() {} }],
+        }),
+      },
+    })
+    window.MediaRecorder = FakeMediaRecorder
+  }, options)
 }
 
 test.describe('Desktop Pet Regressions', () => {
@@ -336,7 +406,7 @@ test.describe('Desktop Pet Regressions', () => {
       }
     }).toEqual({ width: 448, height: 640 })
 
-    let chatPage = await findChatPage(ctx.app)
+    let chatPage = await findWindowBySelector(ctx.app, '[data-testid="chat-root"]')
     await chatPage.click('[data-testid="chat-close"]')
     await ensureChatOpen(ctx)
     await expect.poll(async () => {
@@ -739,48 +809,8 @@ test.describe('Desktop Pet Regressions', () => {
         },
         cancelVoiceStream: async () => ({ canceled: true }),
       }
-
-      class FakeMediaRecorder {
-        static isTypeSupported() {
-          return true
-        }
-
-        constructor(stream, options = {}) {
-          this.stream = stream
-          this.mimeType = options.mimeType || 'audio/webm'
-          this.state = 'inactive'
-          this.ondataavailable = null
-          this.onstop = null
-          this.onerror = null
-        }
-
-        start() {
-          this.state = 'recording'
-          setTimeout(() => {
-            this.ondataavailable && this.ondataavailable({
-              data: new Blob(['voice-rt'], { type: this.mimeType }),
-            })
-          }, 8)
-        }
-
-        stop() {
-          this.state = 'inactive'
-          setTimeout(() => {
-            this.onstop && this.onstop()
-          }, 8)
-        }
-      }
-
-      Object.defineProperty(navigator, 'mediaDevices', {
-        configurable: true,
-        value: {
-          getUserMedia: async () => ({
-            getTracks: () => [{ stop() {} }],
-          }),
-        },
-      })
-      window.MediaRecorder = FakeMediaRecorder
     })
+    await installFakeMediaRecorder(chatPage, { chunks: ['voice-rt'] })
 
     await chatPage.click('[data-testid="chat-voice-toggle"]')
     await expect(chatPage.locator('[data-testid="chat-input"]')).toHaveValue(/实时片段/)
@@ -796,6 +826,106 @@ test.describe('Desktop Pet Regressions', () => {
     expect(runtime.stopHit).toBeGreaterThan(0)
     expect(runtime.partialHit).toBeGreaterThan(0)
     expect(runtime.finalHit).toBeGreaterThan(0)
+  })
+
+  test('voice recording locks send action until recognition finalized', async () => {
+    await configureVoice(ctx.page, { autoPlay: false })
+    const chatPage = await ensureChatOpen(ctx)
+    await configureLlmApiKey(chatPage, 'e2e-voice-send-guard-key')
+
+    await chatPage.evaluate(() => {
+      if (window.__e2eVoiceSendGuardMockInstalled) return
+      window.__e2eVoiceSendGuardMockInstalled = true
+      let activeSessionId = ''
+
+      window.__e2eChatVoiceApiMock = {
+        startVoiceStream: async () => {
+          activeSessionId = 'e2e-send-guard-session'
+          return { sessionId: activeSessionId }
+        },
+        pushVoiceStreamChunk: async () => {
+          const payload = { sessionId: activeSessionId, text: '实时语音文本' }
+          window.__e2eChatVoiceStreamHooks?.emitPartial?.(payload)
+          return { ok: true }
+        },
+        stopVoiceStream: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 120))
+          const payload = { sessionId: activeSessionId, text: '收尾识别文本' }
+          window.__e2eChatVoiceStreamHooks?.emitFinal?.(payload)
+          return { text: payload.text }
+        },
+        cancelVoiceStream: async () => ({ canceled: true }),
+      }
+    })
+    await installFakeMediaRecorder(chatPage, { chunks: ['voice-send-guard'] })
+
+    await chatPage.fill('[data-testid="chat-input"]', '这段话先别发')
+    await chatPage.click('[data-testid="chat-voice-toggle"]')
+    await expect(chatPage.locator('[data-testid="chat-send"]')).toBeDisabled()
+    const userCountBeforeRecordingEnter = await chatPage.locator('.chat-window-item--user').count()
+    await chatPage.locator('[data-testid="chat-input"]').press('Enter')
+    await chatPage.waitForTimeout(120)
+    const userCountAfterRecordingEnter = await chatPage.locator('.chat-window-item--user').count()
+    expect(userCountAfterRecordingEnter).toBe(userCountBeforeRecordingEnter)
+
+    await chatPage.click('[data-testid="chat-voice-toggle"]')
+    await expect(chatPage.locator('[data-testid="chat-status"]')).toContainText('录音已结束，正在收尾识别...')
+    await expect(chatPage.locator('[data-testid="chat-send"]')).toBeDisabled()
+    const userCountBeforeTranscribingEnter = await chatPage.locator('.chat-window-item--user').count()
+    await chatPage.locator('[data-testid="chat-input"]').press('Enter')
+    await chatPage.waitForTimeout(120)
+    const userCountAfterTranscribingEnter = await chatPage.locator('.chat-window-item--user').count()
+    expect(userCountAfterTranscribingEnter).toBe(userCountBeforeTranscribingEnter)
+
+    await expect(chatPage.locator('[data-testid="chat-input"]')).toHaveValue(/收尾识别文本/)
+    await expect(chatPage.locator('[data-testid="chat-send"]')).toBeEnabled()
+
+    await chatPage.click('[data-testid="chat-send"]')
+    await expect(chatPage.locator('[data-testid="chat-input"]')).toHaveValue('')
+  })
+
+  test('voice final text is not refilled after sending', async () => {
+    await configureVoice(ctx.page, { autoPlay: false })
+    const chatPage = await ensureChatOpen(ctx)
+    await configureLlmApiKey(chatPage, 'e2e-voice-send-refill-key')
+
+    await chatPage.evaluate(() => {
+      if (window.__e2eVoiceSendRefillGuardMockInstalled) return
+      window.__e2eVoiceSendRefillGuardMockInstalled = true
+      let activeSessionId = ''
+
+      window.__e2eChatVoiceApiMock = {
+        startVoiceStream: async () => {
+          activeSessionId = 'e2e-send-refill-session'
+          return { sessionId: activeSessionId }
+        },
+        pushVoiceStreamChunk: async () => {
+          const payload = { sessionId: activeSessionId, text: '发送后不应回填' }
+          window.__e2eChatVoiceStreamHooks?.emitPartial?.(payload)
+          return { ok: true }
+        },
+        stopVoiceStream: async () => {
+          const payload = { sessionId: activeSessionId, text: '发送后不应回填' }
+          window.__e2eChatVoiceStreamHooks?.emitFinal?.(payload)
+          setTimeout(() => {
+            window.__e2eChatVoiceStreamHooks?.emitFinal?.(payload)
+          }, 100)
+          return { text: payload.text }
+        },
+        cancelVoiceStream: async () => ({ canceled: true }),
+      }
+    })
+    await installFakeMediaRecorder(chatPage, { chunks: ['voice-send-refill-guard'] })
+
+    await chatPage.click('[data-testid="chat-voice-toggle"]')
+    await chatPage.click('[data-testid="chat-voice-toggle"]')
+    await expect(chatPage.locator('[data-testid="chat-input"]')).toHaveValue(/发送后不应回填/)
+
+    await chatPage.click('[data-testid="chat-send"]')
+    await expect(chatPage.locator('[data-testid="chat-input"]')).toHaveValue('')
+
+    await chatPage.waitForTimeout(220)
+    await expect(chatPage.locator('[data-testid="chat-input"]')).toHaveValue('')
   })
 
   test('voice stream keeps committed prefix when final text is shorter', async () => {
@@ -844,52 +974,10 @@ test.describe('Desktop Pet Regressions', () => {
         },
         cancelVoiceStream: async () => ({ canceled: true }),
       }
-
-      class FakeMediaRecorder {
-        static isTypeSupported() {
-          return true
-        }
-
-        constructor(stream, options = {}) {
-          this.stream = stream
-          this.mimeType = options.mimeType || 'audio/webm'
-          this.state = 'inactive'
-          this.ondataavailable = null
-          this.onstop = null
-          this.onerror = null
-        }
-
-        start() {
-          this.state = 'recording'
-          setTimeout(() => {
-            this.ondataavailable && this.ondataavailable({
-              data: new Blob(['voice-prefix-guard-1'], { type: this.mimeType }),
-            })
-          }, 8)
-          setTimeout(() => {
-            this.ondataavailable && this.ondataavailable({
-              data: new Blob(['voice-prefix-guard-2'], { type: this.mimeType }),
-            })
-          }, 16)
-        }
-
-        stop() {
-          this.state = 'inactive'
-          setTimeout(() => {
-            this.onstop && this.onstop()
-          }, 8)
-        }
-      }
-
-      Object.defineProperty(navigator, 'mediaDevices', {
-        configurable: true,
-        value: {
-          getUserMedia: async () => ({
-            getTracks: () => [{ stop() {} }],
-          }),
-        },
-      })
-      window.MediaRecorder = FakeMediaRecorder
+    })
+    await installFakeMediaRecorder(chatPage, {
+      chunks: ['voice-prefix-guard-1', 'voice-prefix-guard-2'],
+      chunkDelays: [8, 16],
     })
 
     await chatPage.click('[data-testid="chat-voice-toggle"]')
@@ -929,48 +1017,8 @@ test.describe('Desktop Pet Regressions', () => {
         },
         cancelVoiceStream: async () => ({ canceled: true }),
       }
-
-      class FakeMediaRecorder {
-        static isTypeSupported() {
-          return true
-        }
-
-        constructor(stream, options = {}) {
-          this.stream = stream
-          this.mimeType = options.mimeType || 'audio/webm'
-          this.state = 'inactive'
-          this.ondataavailable = null
-          this.onstop = null
-          this.onerror = null
-        }
-
-        start() {
-          this.state = 'recording'
-          setTimeout(() => {
-            this.ondataavailable && this.ondataavailable({
-              data: new Blob(['voice-fallback'], { type: this.mimeType }),
-            })
-          }, 8)
-        }
-
-        stop() {
-          this.state = 'inactive'
-          setTimeout(() => {
-            this.onstop && this.onstop()
-          }, 8)
-        }
-      }
-
-      Object.defineProperty(navigator, 'mediaDevices', {
-        configurable: true,
-        value: {
-          getUserMedia: async () => ({
-            getTracks: () => [{ stop() {} }],
-          }),
-        },
-      })
-      window.MediaRecorder = FakeMediaRecorder
     })
+    await installFakeMediaRecorder(chatPage, { chunks: ['voice-fallback'] })
 
     await chatPage.click('[data-testid="chat-voice-toggle"]')
     await chatPage.waitForTimeout(120)
@@ -991,54 +1039,7 @@ test.describe('Desktop Pet Regressions', () => {
   test('voice transcribe failure shows readable error in chat', async () => {
     await configureVoice(ctx.page, { autoPlay: false })
     const chatPage = await ensureChatOpen(ctx)
-
-    await chatPage.evaluate(() => {
-      if (!window.__e2eVoiceRecordMockInstalled) {
-        window.__e2eVoiceRecordMockInstalled = true
-
-        class FakeMediaRecorder {
-          static isTypeSupported() {
-            return true
-          }
-
-          constructor(stream, options = {}) {
-            this.stream = stream
-            this.mimeType = options.mimeType || 'audio/webm'
-            this.state = 'inactive'
-            this.ondataavailable = null
-            this.onstop = null
-            this.onerror = null
-          }
-
-          start() {
-            this.state = 'recording'
-            setTimeout(() => {
-              this.ondataavailable && this.ondataavailable({
-                data: new Blob(['fake-audio'], { type: this.mimeType }),
-              })
-            }, 8)
-          }
-
-          stop() {
-            this.state = 'inactive'
-            setTimeout(() => {
-              this.onstop && this.onstop()
-            }, 8)
-          }
-        }
-
-        Object.defineProperty(navigator, 'mediaDevices', {
-          configurable: true,
-          value: {
-            getUserMedia: async () => ({
-              getTracks: () => [{ stop() {} }],
-            }),
-          },
-        })
-        window.MediaRecorder = FakeMediaRecorder
-      }
-
-    })
+    await installFakeMediaRecorder(chatPage, { chunks: ['fake-audio'] })
 
     await chatPage.click('[data-testid="chat-voice-toggle"]')
     await chatPage.waitForTimeout(30)

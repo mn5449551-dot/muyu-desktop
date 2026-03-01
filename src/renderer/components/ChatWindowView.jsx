@@ -20,6 +20,83 @@ const PROFILE_CONFLICT_FIELD_LABELS = Object.freeze({
   birthday_year: '出生年份',
 })
 
+function buildMissingApiKeyHint(charId) {
+  return buildChatErrorMessage({
+    charId,
+    payload: {
+      source: 'llm',
+      kind: 'missing_key',
+      reasonCode: 'llm_missing_api_key',
+      message: '请先在设置里配置 API Key',
+    },
+  })
+}
+
+function isVoiceInputLocked({
+  recording = false,
+  transcribing = false,
+  voiceSessionBusy = false,
+  activeVoiceSessionId = '',
+} = {}) {
+  return Boolean(recording || transcribing || voiceSessionBusy || String(activeVoiceSessionId || '').trim())
+}
+
+function buildVoiceInputPrefix(baseInput = '') {
+  const normalized = String(baseInput || '')
+  return normalized && !/\s$/.test(normalized) ? `${normalized} ` : normalized
+}
+
+function buildChatStatusText({
+  recording = false,
+  transcribing = false,
+  voiceSessionBusy = false,
+  error = '',
+  voiceHint = '',
+  speaking = false,
+  voiceAutoPlay = true,
+} = {}) {
+  if (recording) {
+    return {
+      kind: 'info',
+      text: '录音中，识别内容会实时写入输入框',
+    }
+  }
+  if (transcribing) {
+    return {
+      kind: 'info',
+      text: '录音已结束，正在收尾识别...',
+    }
+  }
+  if (voiceSessionBusy) {
+    return {
+      kind: 'info',
+      text: '语音处理中，请稍候...',
+    }
+  }
+  if (error) {
+    return {
+      kind: 'error',
+      text: '出现错误，请查看上方消息详情',
+    }
+  }
+  if (voiceHint) {
+    return {
+      kind: 'warn',
+      text: voiceHint,
+    }
+  }
+  if (speaking) {
+    return {
+      kind: 'info',
+      text: '正在语音播报',
+    }
+  }
+  return {
+    kind: 'neutral',
+    text: `语音播放${voiceAutoPlay ? '开' : '关'} · 点击“语”开始录音`,
+  }
+}
+
 function downsampleFloat32Buffer(source, inputRate, outputRate) {
   const input = source instanceof Float32Array ? source : Float32Array.from(source || [])
   if (!input.length) return new Float32Array(0)
@@ -189,6 +266,7 @@ export default function ChatWindowView() {
   const [voiceAutoPlay, setVoiceAutoPlay] = useState(true)
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
+  const [voiceSessionBusy, setVoiceSessionBusy] = useState(false)
   const [speaking, setSpeaking] = useState(false)
   const [voiceHint, setVoiceHint] = useState('')
   const [pendingMemoryConflict, setPendingMemoryConflict] = useState(null)
@@ -537,6 +615,15 @@ export default function ChatWindowView() {
     recordingMimeTypeRef.current = 'audio/webm'
   }, [])
 
+  const scheduleRecordingAutoStop = useCallback((durationMs = 20000) => {
+    if (recordAutoStopTimerRef.current) {
+      clearTimeout(recordAutoStopTimerRef.current)
+    }
+    recordAutoStopTimerRef.current = setTimeout(() => {
+      stopRecordingRef.current?.({ finalize: true })
+    }, durationMs)
+  }, [])
+
   const clearLiveVoiceState = useCallback((options = {}) => {
     const {
       clearSessionId = true,
@@ -548,7 +635,10 @@ export default function ChatWindowView() {
       resetTranscribing = false,
     } = options
 
-    if (clearSessionId) activeVoiceSessionIdRef.current = ''
+    if (clearSessionId) {
+      activeVoiceSessionIdRef.current = ''
+      setVoiceSessionBusy(false)
+    }
     if (clearPrefix) liveInputPrefixRef.current = ''
     if (clearStreamError) liveStreamErrorRef.current = ''
     if (resetRecognition) resetLiveRecognitionState()
@@ -556,6 +646,18 @@ export default function ChatWindowView() {
     if (resetBuffers) resetVoiceRecordingBuffers()
     if (resetTranscribing) setTranscribing(false)
   }, [resetLiveRecognitionState, resetVoiceRecordingBuffers, stopLiveTyping])
+
+  const startLiveVoiceSession = useCallback((sessionId, options = {}) => {
+    const { baseInput = '', mimeType = 'audio/webm' } = options
+    activeVoiceSessionIdRef.current = String(sessionId || '').trim()
+    setVoiceSessionBusy(true)
+    recordShouldFinalizeRef.current = true
+    recordingMimeTypeRef.current = mimeType
+    liveInputPrefixRef.current = buildVoiceInputPrefix(baseInput)
+    liveStreamErrorRef.current = ''
+    resetLiveRecognitionState()
+    resetLiveInputState(baseInput)
+  }, [resetLiveRecognitionState, resetLiveInputState])
 
   const waitPendingVoiceChunks = useCallback(async () => {
     const tasks = Array.from(pendingChunkTasksRef.current)
@@ -629,6 +731,7 @@ export default function ChatWindowView() {
   }) => {
     const activeSessionId = String(sessionId || '').trim()
     if (!activeSessionId) {
+      setVoiceSessionBusy(false)
       clearLiveVoiceState({
         clearSessionId: false,
         clearPrefix: false,
@@ -802,6 +905,15 @@ export default function ChatWindowView() {
       return false
     }
   }, [checkApiKeyConfigured])
+
+  const getVoiceInputLocked = useCallback(() => {
+    return isVoiceInputLocked({
+      recording,
+      transcribing,
+      voiceSessionBusy,
+      activeVoiceSessionId: activeVoiceSessionIdRef.current,
+    })
+  }, [recording, transcribing, voiceSessionBusy])
 
   const refreshPendingMemoryConflict = useCallback(async () => {
     try {
@@ -1234,20 +1346,13 @@ export default function ChatWindowView() {
     const normalizedExplicit = normalizeIncomingText(explicit)
     const source = explicit === null || explicit === undefined ? input : normalizedExplicit
     const text = String(source || '').trim()
-    if (!text || streaming || !char) return
+    const voiceInputLocked = getVoiceInputLocked()
+    if (!text || streaming || !char || voiceInputLocked) return
 
     const configured = await refreshRuntimeConfig()
 
     if (!configured) {
-      const hint = buildChatErrorMessage({
-        charId: char.id,
-        payload: {
-          source: 'llm',
-          kind: 'missing_key',
-          reasonCode: 'llm_missing_api_key',
-          message: '请先在设置里配置 API Key',
-        },
-      })
+      const hint = buildMissingApiKeyHint(char.id)
       setError(hint.text)
       appendAssistantMessage(hint.text, { isError: true })
       return
@@ -1271,15 +1376,7 @@ export default function ChatWindowView() {
     try {
       const configured = await refreshRuntimeConfig()
       if (!configured) {
-        const hint = buildChatErrorMessage({
-          charId: char.id,
-          payload: {
-            source: 'llm',
-            kind: 'missing_key',
-            reasonCode: 'llm_missing_api_key',
-            message: '请先在设置里配置 API Key',
-          },
-        })
+        const hint = buildMissingApiKeyHint(char.id)
         setStreaming(false)
         setError(hint.text)
         activeRequestRef.current = ''
@@ -1379,13 +1476,10 @@ export default function ChatWindowView() {
         mediaStreamRef.current = stream
         mediaRecorderRef.current = recorder
         resetVoiceRecordingBuffers()
-        recordShouldFinalizeRef.current = true
-        recordingMimeTypeRef.current = audioType
-        activeVoiceSessionIdRef.current = voiceSessionId
-        liveInputPrefixRef.current = input && !/\s$/.test(input) ? `${input} ` : input
-        liveStreamErrorRef.current = ''
-        resetLiveRecognitionState()
-        resetLiveInputState(input)
+        startLiveVoiceSession(voiceSessionId, {
+          baseInput: input,
+          mimeType: audioType,
+        })
 
         recorder.ondataavailable = (event) => {
           if (event.data && event.data.size > 0) {
@@ -1440,9 +1534,7 @@ export default function ChatWindowView() {
 
         recorder.start(120)
         setRecording(true)
-        recordAutoStopTimerRef.current = setTimeout(() => {
-          stopRecordingRef.current?.({ finalize: true })
-        }, 20000)
+        scheduleRecordingAutoStop()
         return
       }
 
@@ -1469,13 +1561,10 @@ export default function ChatWindowView() {
       audioSilenceGainRef.current = silenceGain
 
       resetVoiceRecordingBuffers()
-      recordShouldFinalizeRef.current = true
-      recordingMimeTypeRef.current = 'audio/pcm'
-      activeVoiceSessionIdRef.current = voiceSessionId
-      liveInputPrefixRef.current = input && !/\s$/.test(input) ? `${input} ` : input
-      liveStreamErrorRef.current = ''
-      resetLiveRecognitionState()
-      resetLiveInputState(input)
+      startLiveVoiceSession(voiceSessionId, {
+        baseInput: input,
+        mimeType: 'audio/pcm',
+      })
 
       processor.onaudioprocess = (event) => {
         try {
@@ -1497,9 +1586,7 @@ export default function ChatWindowView() {
       await audioContext.resume().catch(() => {})
 
       setRecording(true)
-      recordAutoStopTimerRef.current = setTimeout(() => {
-        stopRecordingRef.current?.({ finalize: true })
-      }, 20000)
+      scheduleRecordingAutoStop()
     } catch (err) {
       cleanupRecorderStream()
       setRecording(false)
@@ -1545,42 +1632,16 @@ export default function ChatWindowView() {
   }
 
   const title = `${char?.name || '角色'}小剧场`
-  const statusText = (() => {
-    if (recording) {
-      return {
-        kind: 'info',
-        text: '录音中，识别内容会实时写入输入框',
-      }
-    }
-    if (transcribing) {
-      return {
-        kind: 'info',
-        text: '录音已结束，正在收尾识别...',
-      }
-    }
-    if (error) {
-      return {
-        kind: 'error',
-        text: '出现错误，请查看上方消息详情',
-      }
-    }
-    if (voiceHint) {
-      return {
-        kind: 'warn',
-        text: voiceHint,
-      }
-    }
-    if (speaking) {
-      return {
-        kind: 'info',
-        text: '正在语音播报',
-      }
-    }
-    return {
-      kind: 'neutral',
-      text: `语音播放${voiceAutoPlay ? '开' : '关'} · 点击“语”开始录音`,
-    }
-  })()
+  const voiceInputLocked = getVoiceInputLocked()
+  const statusText = buildChatStatusText({
+    recording,
+    transcribing,
+    voiceSessionBusy,
+    error,
+    voiceHint,
+    speaking,
+    voiceAutoPlay,
+  })
   const conflictFieldLabel = PROFILE_CONFLICT_FIELD_LABELS[pendingMemoryConflict?.fieldKey] || '档案字段'
   const conflictCurrentValue = String(pendingMemoryConflict?.currentValue || '').trim() || '（空）'
   const conflictCandidateValue = String(pendingMemoryConflict?.candidateValue || '').trim() || '（空）'
@@ -1701,6 +1762,7 @@ export default function ChatWindowView() {
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
+                  if (voiceInputLocked) return
                   sendMessage()
                 }
               }}
@@ -1709,7 +1771,15 @@ export default function ChatWindowView() {
             {streaming ? (
               <button data-testid="chat-cancel" className="chat-window-send chat-window-send--cancel" onClick={stopActiveStream}>停</button>
             ) : (
-              <button data-testid="chat-send" className="chat-window-send" onClick={() => sendMessage()}>发</button>
+              <button
+                data-testid="chat-send"
+                className="chat-window-send"
+                disabled={voiceInputLocked}
+                title={voiceInputLocked ? '请先结束录音' : '发送消息'}
+                onClick={() => sendMessage()}
+              >
+                发
+              </button>
             )}
           </div>
         </footer>

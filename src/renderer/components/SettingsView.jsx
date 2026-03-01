@@ -73,6 +73,21 @@ function getErrorMessage(error) {
   return error?.message || String(error)
 }
 
+function makeState(kind = 'idle', message = '') {
+  return { kind, message }
+}
+
+function normalizeProfileValues(profile = {}) {
+  return {
+    name: String(profile?.name || ''),
+    occupation: String(profile?.occupation || ''),
+    birthday: String(profile?.birthday || ''),
+    birthday_year: String(profile?.birthday_year || ''),
+    traits: String(profile?.traits || ''),
+    notes: String(profile?.notes || ''),
+  }
+}
+
 function pickLlmConfig(config = {}) {
   return {
     baseUrl: String(config.baseUrl || '').trim(),
@@ -134,13 +149,13 @@ export default function SettingsView() {
   const [voiceAccessKeyDirty, setVoiceAccessKeyDirty] = useState(false)
   const [savedConfig, setSavedConfig] = useState(null)
   const [testingConnection, setTestingConnection] = useState(false)
-  const [connectionState, setConnectionState] = useState({ kind: 'idle', message: '' })
+  const [connectionState, setConnectionState] = useState(makeState())
   const [testingVoiceConnection, setTestingVoiceConnection] = useState(false)
-  const [voiceConnectionState, setVoiceConnectionState] = useState({ kind: 'idle', message: '' })
+  const [voiceConnectionState, setVoiceConnectionState] = useState(makeState())
   const [savingLlmConfig, setSavingLlmConfig] = useState(false)
   const [savingVoiceConfig, setSavingVoiceConfig] = useState(false)
-  const [llmSaveState, setLlmSaveState] = useState({ kind: 'idle', message: '' })
-  const [voiceSaveState, setVoiceSaveState] = useState({ kind: 'idle', message: '' })
+  const [llmSaveState, setLlmSaveState] = useState(makeState())
+  const [voiceSaveState, setVoiceSaveState] = useState(makeState())
 
   const [profile, setProfile] = useState({
     name: '',
@@ -185,10 +200,62 @@ export default function SettingsView() {
   const rolesRef = useRef(null)
   const memoryRef = useRef(null)
 
-  const resetConnectionState = () => {
-    setConnectionState({ kind: 'idle', message: '' })
-    setVoiceConnectionState({ kind: 'idle', message: '' })
+  const resetSaveState = () => {
+    setLlmSaveState(makeState())
+    setVoiceSaveState(makeState())
   }
+
+  const resetConnectionState = () => {
+    setConnectionState(makeState())
+    setVoiceConnectionState(makeState())
+  }
+
+  const resetConfigFeedbackState = () => {
+    resetConnectionState()
+    resetSaveState()
+  }
+
+  const mergeSavedConfig = useCallback((patch = {}) => {
+    setSavedConfig((prev) => ({
+      ...(prev || {}),
+      ...patch,
+    }))
+  }, [])
+
+  const applyLlmSaveResult = useCallback((nextSettings) => {
+    setConfig((prev) => ({
+      ...prev,
+      baseUrl: nextSettings.baseUrl,
+      model: nextSettings.model,
+      temperature: nextSettings.temperature,
+      maxContext: nextSettings.maxContext,
+      apiKey: '',
+      apiKeyConfigured: nextSettings.apiKeyConfigured,
+      encryptionAvailable: nextSettings.encryptionAvailable,
+    }))
+    mergeSavedConfig(pickLlmConfig(nextSettings))
+    setApiKeyDirty(false)
+  }, [mergeSavedConfig])
+
+  const applyVoiceSaveResult = useCallback((nextSettings) => {
+    setConfig((prev) => ({
+      ...prev,
+      voiceRegion: nextSettings.voiceRegion,
+      voiceAppId: nextSettings.voiceAppId,
+      voiceAsrMode: nextSettings.voiceAsrMode,
+      voiceAsrResourceId: nextSettings.voiceAsrResourceId,
+      voiceAsrStreamUrl: nextSettings.voiceAsrStreamUrl,
+      voiceAsrUploadEndpoint: nextSettings.voiceAsrUploadEndpoint,
+      voiceTtsResourceId: nextSettings.voiceTtsResourceId,
+      voiceTtsFormat: nextSettings.voiceTtsFormat,
+      voiceTtsSampleRate: nextSettings.voiceTtsSampleRate,
+      voiceAccessKey: '',
+      voiceAccessKeyConfigured: nextSettings.voiceAccessKeyConfigured,
+      voiceEncryptionAvailable: nextSettings.voiceEncryptionAvailable,
+    }))
+    mergeSavedConfig(pickVoiceConfig(nextSettings))
+    setVoiceAccessKeyDirty(false)
+  }, [mergeSavedConfig])
 
   const setErrorStatus = useCallback((prefix, error) => {
     setStatus(`${prefix}: ${getErrorMessage(error)}`)
@@ -209,9 +276,7 @@ export default function SettingsView() {
 
   const updateConfigField = (patch) => {
     setConfig((prev) => ({ ...prev, ...patch }))
-    resetConnectionState()
-    setLlmSaveState({ kind: 'idle', message: '' })
-    setVoiceSaveState({ kind: 'idle', message: '' })
+    resetConfigFeedbackState()
   }
 
   const loadAll = useCallback(async (preferredId = null) => {
@@ -235,18 +300,9 @@ export default function SettingsView() {
 
     setApiKeyDirty(false)
     setVoiceAccessKeyDirty(false)
-    resetConnectionState()
-    setLlmSaveState({ kind: 'idle', message: '' })
-    setVoiceSaveState({ kind: 'idle', message: '' })
+    resetConfigFeedbackState()
 
-    const normalizedProfile = {
-      name: String(userProfile?.name || ''),
-      occupation: String(userProfile?.occupation || ''),
-      birthday: String(userProfile?.birthday || ''),
-      birthday_year: String(userProfile?.birthday_year || ''),
-      traits: String(userProfile?.traits || ''),
-      notes: String(userProfile?.notes || ''),
-    }
+    const normalizedProfile = normalizeProfileValues(userProfile)
     setProfile(normalizedProfile)
     setSavedProfile(normalizedProfile)
     setPetScale(clampPetScale(petUiPrefs?.scale))
@@ -439,25 +495,11 @@ export default function SettingsView() {
       const nextConfig = await window.electronAPI.setAppConfig(payload)
       const nextSettings = buildSettingsConfig(nextConfig)
 
-      setConfig((prev) => ({
-        ...prev,
-        baseUrl: nextSettings.baseUrl,
-        model: nextSettings.model,
-        temperature: nextSettings.temperature,
-        maxContext: nextSettings.maxContext,
-        apiKey: '',
-        apiKeyConfigured: nextSettings.apiKeyConfigured,
-        encryptionAvailable: nextSettings.encryptionAvailable,
-      }))
-      setSavedConfig((prev) => ({
-        ...(prev || {}),
-        ...pickLlmConfig(nextSettings),
-      }))
-      setApiKeyDirty(false)
-      setConnectionState({ kind: 'idle', message: '' })
-      setLlmSaveState({ kind: 'success', message: 'AI 配置已保存' })
+      applyLlmSaveResult(nextSettings)
+      setConnectionState(makeState())
+      setLlmSaveState(makeState('success', 'AI 配置已保存'))
     } catch (error) {
-      setLlmSaveState({ kind: 'error', message: `保存失败：${getErrorMessage(error)}` })
+      setLlmSaveState(makeState('error', `保存失败：${getErrorMessage(error)}`))
     } finally {
       setSavingLlmConfig(false)
     }
@@ -470,30 +512,11 @@ export default function SettingsView() {
       const nextConfig = await window.electronAPI.setAppConfig(payload)
       const nextSettings = buildSettingsConfig(nextConfig)
 
-      setConfig((prev) => ({
-        ...prev,
-        voiceRegion: nextSettings.voiceRegion,
-        voiceAppId: nextSettings.voiceAppId,
-        voiceAsrMode: nextSettings.voiceAsrMode,
-        voiceAsrResourceId: nextSettings.voiceAsrResourceId,
-        voiceAsrStreamUrl: nextSettings.voiceAsrStreamUrl,
-        voiceAsrUploadEndpoint: nextSettings.voiceAsrUploadEndpoint,
-        voiceTtsResourceId: nextSettings.voiceTtsResourceId,
-        voiceTtsFormat: nextSettings.voiceTtsFormat,
-        voiceTtsSampleRate: nextSettings.voiceTtsSampleRate,
-        voiceAccessKey: '',
-        voiceAccessKeyConfigured: nextSettings.voiceAccessKeyConfigured,
-        voiceEncryptionAvailable: nextSettings.voiceEncryptionAvailable,
-      }))
-      setSavedConfig((prev) => ({
-        ...(prev || {}),
-        ...pickVoiceConfig(nextSettings),
-      }))
-      setVoiceAccessKeyDirty(false)
-      setVoiceConnectionState({ kind: 'idle', message: '' })
-      setVoiceSaveState({ kind: 'success', message: '语音配置已保存' })
+      applyVoiceSaveResult(nextSettings)
+      setVoiceConnectionState(makeState())
+      setVoiceSaveState(makeState('success', '语音配置已保存'))
     } catch (error) {
-      setVoiceSaveState({ kind: 'error', message: `保存失败：${getErrorMessage(error)}` })
+      setVoiceSaveState(makeState('error', `保存失败：${getErrorMessage(error)}`))
     } finally {
       setSavingVoiceConfig(false)
     }
@@ -504,15 +527,12 @@ export default function SettingsView() {
       const nextConfig = await window.electronAPI.setAppConfig({ llm: { apiKey: '' } })
       const nextSettings = buildSettingsConfig(nextConfig)
       setConfig((prev) => ({ ...prev, apiKey: '', apiKeyConfigured: nextSettings.apiKeyConfigured }))
-      setSavedConfig((prev) => ({
-        ...(prev || {}),
-        apiKeyConfigured: nextSettings.apiKeyConfigured,
-      }))
+      mergeSavedConfig({ apiKeyConfigured: nextSettings.apiKeyConfigured })
       setApiKeyDirty(false)
       resetConnectionState()
-      setLlmSaveState({ kind: 'success', message: 'API Key 已清空' })
+      setLlmSaveState(makeState('success', 'API Key 已清空'))
     } catch (error) {
-      setLlmSaveState({ kind: 'error', message: `清空失败：${getErrorMessage(error)}` })
+      setLlmSaveState(makeState('error', `清空失败：${getErrorMessage(error)}`))
     }
   }
 
@@ -525,29 +545,19 @@ export default function SettingsView() {
         voiceAccessKey: '',
         voiceAccessKeyConfigured: nextSettings.voiceAccessKeyConfigured,
       }))
-      setSavedConfig((prev) => ({
-        ...(prev || {}),
-        voiceAccessKeyConfigured: nextSettings.voiceAccessKeyConfigured,
-      }))
+      mergeSavedConfig({ voiceAccessKeyConfigured: nextSettings.voiceAccessKeyConfigured })
       setVoiceAccessKeyDirty(false)
-      setVoiceConnectionState({ kind: 'idle', message: '' })
-      setVoiceSaveState({ kind: 'success', message: '语音 Access Token 已清空' })
+      setVoiceConnectionState(makeState())
+      setVoiceSaveState(makeState('success', '语音 Access Token 已清空'))
     } catch (error) {
-      setVoiceSaveState({ kind: 'error', message: `清空语音 Token 失败：${getErrorMessage(error)}` })
+      setVoiceSaveState(makeState('error', `清空语音 Token 失败：${getErrorMessage(error)}`))
     }
   }
 
   const saveProfile = async () => {
     try {
       const next = await window.electronAPI.setProfile(profile)
-      const normalizedProfile = {
-        name: String(next?.name || ''),
-        occupation: String(next?.occupation || ''),
-        birthday: String(next?.birthday || ''),
-        birthday_year: String(next?.birthday_year || ''),
-        traits: String(next?.traits || ''),
-        notes: String(next?.notes || ''),
-      }
+      const normalizedProfile = normalizeProfileValues(next)
       setProfile(normalizedProfile)
       setSavedProfile(normalizedProfile)
       setStatus('用户档案已保存')
@@ -709,7 +719,7 @@ export default function SettingsView() {
   const testConnection = async () => {
     try {
       setTestingConnection(true)
-      setConnectionState({ kind: 'testing', message: '测试中...' })
+      setConnectionState(makeState('testing', '测试中...'))
 
       const typedKey = String(config.apiKey || '').trim()
       const hasSavedKey = Boolean(config.apiKeyConfigured)
@@ -723,15 +733,9 @@ export default function SettingsView() {
       const payload = buildLlmTestPayload(config, { apiKeyDirty, typedKey })
       const result = await window.electronAPI.testLlmConnection(payload)
       const keySource = apiKeyDirty ? '临时 Key' : '已保存 Key'
-      setConnectionState({
-        kind: 'success',
-        message: `已连通 · ${result.mode} · ${result.latencyMs}ms · ${keySource}`,
-      })
+      setConnectionState(makeState('success', `已连通 · ${result.mode} · ${result.latencyMs}ms · ${keySource}`))
     } catch (error) {
-      setConnectionState({
-        kind: 'error',
-        message: `连通失败：${getErrorMessage(error)}`,
-      })
+      setConnectionState(makeState('error', `连通失败：${getErrorMessage(error)}`))
     } finally {
       setTestingConnection(false)
     }
@@ -740,7 +744,7 @@ export default function SettingsView() {
   const testVoiceConnection = async () => {
     try {
       setTestingVoiceConnection(true)
-      setVoiceConnectionState({ kind: 'testing', message: '测试中...' })
+      setVoiceConnectionState(makeState('testing', '测试中...'))
 
       const typedToken = String(config.voiceAccessKey || '').trim()
       const hasSavedToken = Boolean(config.voiceAccessKeyConfigured)
@@ -760,15 +764,9 @@ export default function SettingsView() {
       const payload = buildVoiceTestPayload(config, { voiceAccessKeyDirty, typedToken })
       const result = await window.electronAPI.testVoiceConnection(payload)
       const keySource = voiceAccessKeyDirty ? '临时 Token' : '已保存 Token'
-      setVoiceConnectionState({
-        kind: 'success',
-        message: `语音连通成功 · ${result.mode} · ${result.latencyMs}ms · ${keySource}`,
-      })
+      setVoiceConnectionState(makeState('success', `语音连通成功 · ${result.mode} · ${result.latencyMs}ms · ${keySource}`))
     } catch (error) {
-      setVoiceConnectionState({
-        kind: 'error',
-        message: `语音连通失败：${getErrorMessage(error)}`,
-      })
+      setVoiceConnectionState(makeState('error', `语音连通失败：${getErrorMessage(error)}`))
     } finally {
       setTestingVoiceConnection(false)
     }

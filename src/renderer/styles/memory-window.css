@@ -2,9 +2,11 @@
   min-height: 100vh;
   box-sizing: border-box;
   padding: 16px;
-  background: #f8f6ef;
-  color: #1f2a37;
-  font-family: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  background: #f0f0f0;
+  background-image: radial-gradient(#000 1px, transparent 1px);
+  background-size: 20px 20px;
+  color: #000;
+  font-family: inherit;
 }
 
 .memory-window-head {
@@ -17,33 +19,42 @@
 
 .memory-window-head h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 26px;
+  font-weight: 900;
+  color: #000;
+  text-transform: uppercase;
+  text-shadow: 2px 2px 0 #fff;
 }
 
 .memory-window-head p {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: #5f6f83;
+  font-size: 14px;
+  font-weight: 700;
+  color: #000;
+  text-shadow: 1px 1px 0 #fff;
 }
 
 .memory-status {
-  margin-bottom: 10px;
-  border: 1px solid #ead7b3;
-  background: #fff5dc;
-  color: #624919;
-  border-radius: 10px;
-  padding: 8px 10px;
-  font-size: 12px;
+  margin-bottom: 12px;
+  border: 4px solid #000;
+  background: #ffde59;
+  color: #000;
+  border-radius: 0;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 900;
+  box-shadow: 4px 4px 0 #000;
 }
 
 .memory-panel {
-  border: 1px solid #e6dfcd;
-  border-radius: 12px;
-  background: #fffdf8;
-  padding: 12px;
+  border: 4px solid #000;
+  border-radius: 0;
+  background: #fff;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  box-shadow: 8px 8px 0 #000;
 }
 
 .memory-role-tabs {
@@ -53,19 +64,26 @@
 }
 
 .memory-role-tab {
-  border: 1px solid #d8d0c2;
-  background: #f8f5ee;
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 13px;
+  border: 3px solid #000;
+  background: #fff;
+  border-radius: 0;
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 900;
   cursor: pointer;
-  color: #334155;
+  color: #000;
+  box-shadow: 3px 3px 0 #000;
+  transition: transform 0.1s;
+}
+
+.memory-role-tab:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 #000;
 }
 
 .memory-role-tab.is-active {
-  border-color: #2f7cfe;
-  background: #eaf2ff;
-  color: #1e3a8a;
+  background: #00f0ff;
+  color: #000;
 }
 
 .memory-filter-row {
@@ -77,14 +95,22 @@
 .memory-search,
 .memory-filter-row select {
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   box-sizing: border-box;
-  border-radius: 10px;
-  border: 1px solid #d4ccba;
+  border-radius: 0;
+  border: 4px solid #000;
   background: #fff;
-  color: #1f2a37;
-  padding: 8px 10px;
-  font-size: 13px;
+  color: #000;
+  padding: 8px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: inset 4px 4px 0 rgba(0, 0, 0, 0.06);
+}
+
+.memory-search:focus,
+.memory-filter-row select:focus {
+  outline: none;
+  background: #ffdf91;
 }
 
 .memory-list {
@@ -94,90 +120,110 @@
 }
 
 .memory-item {
-  border: 1px solid #e6dfcd;
-  border-radius: 10px;
-  background: #fffdf7;
-  padding: 10px;
+  border: 4px solid #000;
+  border-radius: 0;
+  background: #fff;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  box-shadow: 6px 6px 0 #000;
 }
 
 .memory-ts {
-  font-size: 11px;
-  color: #6d7f96;
+  font-size: 12px;
+  font-weight: 900;
+  color: #000;
 }
 
 .memory-text {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 700;
   line-height: 1.55;
-  color: #1f2a37;
+  color: #000;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .memory-structured {
-  border: 1px dashed #d9cdb1;
-  border-radius: 8px;
-  background: #fff;
-  padding: 8px;
+  border: 4px solid #000;
+  border-radius: 0;
+  background: #f0f0f0;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  box-shadow: 4px 4px 0 #000;
 }
 
 .memory-structured-row {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 80px minmax(0, 1fr);
   gap: 8px;
   align-items: start;
 }
 
 .memory-structured-row strong {
-  font-size: 11px;
-  color: #596d86;
+  font-size: 12px;
+  font-weight: 900;
+  color: #000;
   text-transform: uppercase;
 }
 
 .memory-structured-row span {
-  font-size: 12px;
-  color: #2e3f54;
+  font-size: 13px;
+  font-weight: 700;
+  color: #000;
   line-height: 1.45;
   word-break: break-word;
 }
 
 .memory-btn {
-  border: 1px solid #d2c9b4;
-  border-radius: 10px;
-  background: #fbf8ef;
-  color: #24344a;
+  border: 3px solid #000;
+  border-radius: 0;
+  background: #fff;
+  color: #000;
   cursor: pointer;
-  min-height: 40px;
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 600;
+  min-height: 44px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 900;
+  box-shadow: 4px 4px 0 #000;
+  transition: all 0.1s;
+}
+
+.memory-btn:active:not(:disabled) {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 #000;
 }
 
 .memory-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: not-allowed;
+  transform: none;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.5);
 }
 
 .memory-btn--danger {
-  border-color: #f0c2c2;
-  background: #fff2f2;
-  color: #913030;
+  background: #ff5252;
+  color: #fff;
+}
+
+.memory-btn--danger:hover:not(:disabled) {
+  background: #ff7575;
 }
 
 .memory-empty {
   margin: 0;
-  padding: 12px;
-  border-radius: 10px;
-  background: #f8f6ef;
-  border: 1px dashed #dacfb5;
-  color: #62738a;
-  font-size: 12px;
+  padding: 16px;
+  border-radius: 0;
+  background: #fff;
+  border: 4px dashed #000;
+  color: #000;
+  font-size: 14px;
+  font-weight: 900;
+  text-align: center;
 }
 
 .memory-pagination {
@@ -189,8 +235,9 @@
 }
 
 .memory-page-hint {
-  font-size: 12px;
-  color: #5f6f83;
+  font-size: 14px;
+  font-weight: 900;
+  color: #000;
 }
 
 @media (max-width: 760px) {
